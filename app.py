@@ -1,26 +1,30 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import datetime
 
-# 設定網頁標題
-st.set_page_config(page_title="台股量化交易策略觀測站", layout="wide")
+# --- 網頁基礎設定 ---
+st.set_page_config(page_title="台股量化策略觀測站", layout="wide")
 
-st.title("🚀 台股真實價格量化策略 (穩定部署版)")
+st.title("📈 台股量化交易策略觀測站")
+st.caption("使用說明：輸入台股代碼後，系統將自動抓取 Yahoo Finance 真實數據並計算買賣訊號。")
 
-# --- 自定義指標計算公式 (取代 pandas-ta) ---
+# --- 自定義指標計算 (不依賴 pandas-ta) ---
 def calculate_indicators(df):
     df = df.copy().astype(float)
     
-    # 1. 移動平均線 MA
+    # 1. 移動平均線 (MA)
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     
-    # 2. RSI 計算
+    # 2. RSI 計算 (標準 Wilder 算法)
     def compute_rsi(series, period=14):
         delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
+        gain = (delta.where(delta > 0, 0)).fillna(0)
+        loss = (-delta.where(delta < 0, 0)).fillna(0)
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
     
     df['RSI5'] = compute_rsi(df['Close'], 5)
@@ -30,78 +34,96 @@ def calculate_indicators(df):
     low_min = df['Low'].rolling(window=9).min()
     high_max = df['High'].rolling(window=9).max()
     rsv = (df['Close'] - low_min) / (high_max - low_min) * 100
-    
-    df['K'] = rsv.ewm(com=2, adjust=False).mean() # 這裡用 ewm 模擬平滑
+    df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     df['J'] = 3 * df['K'] - 2 * df['D']
     
     return df
 
-# --- 訊號判斷邏輯 (與原本一致) ---
+# --- 策略訊號判斷 ---
 def check_signals(df):
     signals = []
-    for i in range(11, len(df)):
+    # 至少需要 15 天數據才能計算指標
+    for i in range(15, len(df)):
         row = df.iloc[i]
         prev_row = df.iloc[i-1]
         
-        if pd.isna(row['MA10']) or pd.isna(row['J']) or pd.isna(row['RSI10']):
-            continue
-
         buy_triggered = False
         sell_triggered = False
 
-        # 買入條件
-        if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) or \
-           (row['K'] < 20 and row['D'] < 20 and prev_row['K'] <= prev_row['D'] and row['K'] > row['D']) or \
-           (prev_row['J'] < 0 and row['J'] > prev_row['J'] and row['J'] > row['K']) or \
-           ((20 <= prev_row['RSI5'] <= 30) and row['RSI5'] > row['RSI10']) or \
-           (row['RSI5'] > 50 and prev_row['RSI5'] <= 50):
+        # --- 買入條件邏輯 ---
+        # 1. MA 黃金交叉
+        if prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']:
+            buy_triggered = True
+        # 2. KD 低檔金叉
+        elif row['K'] < 25 and row['D'] < 25 and prev_row['K'] <= prev_row['D'] and row['K'] > row['D']:
+            buy_triggered = True
+        # 3. RSI 黃金交叉且站上 50
+        elif row['RSI5'] > 50 and prev_row['RSI5'] <= 50:
             buy_triggered = True
 
-        # 賣出條件
-        if (row['Close'] < row['MA5']) or (row['MA5'] < row['MA10']) or \
-           (row['K'] > 80 and row['D'] > 80 and row['K'] < row['D']) or \
-           (prev_row['J'] > 100 and row['J'] < 100) or \
-           (row['RSI5'] < 50):
+        # --- 賣出條件邏輯 ---
+        # 1. 價格跌破 MA5 或 MA5 轉弱
+        if row['Close'] < row['MA5'] or row['MA5'] < row['MA10']:
+            sell_triggered = True
+        # 2. KD 高檔死叉
+        elif row['K'] > 75 and row['D'] > 75 and prev_row['K'] >= prev_row['D'] and row['K'] < row['D']:
+            sell_triggered = True
+        # 3. RSI 轉弱 (跌破 50)
+        elif row['RSI5'] < 50:
             sell_triggered = True
 
+        date_str = df.index[i].strftime('%Y-%m-%d')
         if buy_triggered and not sell_triggered:
-            signals.append({"日期": df.index[i].strftime('%Y-%m-%d'), "動作": "🔴 買入", "價格": round(row['Close'], 2)})
+            signals.append({"日期": date_str, "動作": "🔴 買入", "價格": round(float(row['Close']), 2), "原因": "技術指標轉強"})
         elif sell_triggered and not buy_triggered:
-            signals.append({"日期": df.index[i].strftime('%Y-%m-%d'), "動作": "🟢 賣出", "價格": round(row['Close'], 2)})
+            signals.append({"日期": date_str, "動作": "🟢 賣出", "價格": round(float(row['Close']), 2), "原因": "技術指標轉弱"})
             
     return signals
 
-# --- Streamlit UI 介面 ---
-user_input = st.sidebar.text_input("輸入台股代碼", value="2330")
-if user_input:
-    with st.spinner("獲取真實數據中..."):
-        # 自動判斷上市或上櫃
-        ticker = f"{user_input}.TW"
-        data = yf.download(ticker, period="1y", auto_adjust=True, progress=False)
+# --- 側邊欄：輸入區 ---
+st.sidebar.header("設定")
+symbol = st.sidebar.text_input("輸入台股代碼", value="2330")
+period = st.sidebar.selectbox("觀測期間", ["1y", "2y", "6m"], index=0)
+
+if symbol:
+    with st.spinner(f"正在分析 {symbol} ..."):
+        # 嘗試上市代碼
+        data = yf.download(f"{symbol}.TW", period=period, auto_adjust=True)
+        # 若無資料則嘗試上櫃代碼
         if data.empty:
-            ticker = f"{user_input}.TWO"
-            data = yf.download(ticker, period="1y", auto_adjust=True, progress=False)
-        
+            data = yf.download(f"{symbol}.TWO", period=period, auto_adjust=True)
+
         if not data.empty:
+            # 修正 yfinance 可能產生的多重索引問題
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
             
-            df_final = calculate_indicators(data)
-            st.success(f"已讀取 {ticker} 最新數據")
+            # 標準化欄位名稱
+            data.columns = [str(c).capitalize() for c in data.columns]
             
-            # 顯示資訊卡片
-            latest = df_final.iloc[-1]
-            c1, c2, c3 = st.columns(3)
-            c1.metric("收盤價", f"{latest['Close']:.2f}")
-            c2.metric("RSI5", f"{latest['RSI5']:.1f}")
-            c3.metric("K/D", f"{latest['K']:.1f} / {latest['D']:.1f}")
+            # 計算指標
+            df_processed = calculate_indicators(data)
             
-            st.line_chart(df_final['Close'])
-            
-            sig_list = check_signals(df_final)
-            if sig_list:
-                st.write("### 🚩 最近策略訊號")
-                st.table(pd.DataFrame(sig_list).iloc[::-1].head(10))
+            # --- 儀表板顯示 ---
+            latest = df_processed.iloc[-1]
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("當前股價", f"{float(latest['Close']):.2f}")
+            c2.metric("MA5 / MA10", f"{float(latest['MA5']):.1f}", f"{float(latest['MA5']-latest['MA10']):.1f}")
+            c3.metric("RSI(5)", f"{float(latest['RSI5']):.1f}")
+            c4.metric("K / D", f"{float(latest['K']):.1f} / {float(latest['D']):.1f}")
+
+            # 股價走勢圖
+            st.subheader("價格走勢與移動平均線")
+            st.line_chart(df_processed[['Close', 'MA5', 'MA10']])
+
+            # 訊號列表
+            sig_results = check_signals(df_processed)
+            if sig_results:
+                st.subheader("🚩 最近交易訊號紀錄")
+                # 倒序顯示最近 10 筆
+                st.table(pd.DataFrame(sig_results).iloc[::-1].head(10))
+            else:
+                st.info("目前尚無明確的買賣訊號。")
         else:
-            st.error("找不到該股票代碼，請檢查輸入。")
+            st.error("無法取得數據。請確認輸入代碼是否正確（例：上市輸入 2330，上櫃輸入 8069）。")
