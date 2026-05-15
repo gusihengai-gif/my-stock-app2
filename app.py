@@ -5,12 +5,12 @@ import plotly.graph_objects as go
 import numpy as np
 
 # --- 網頁配置 ---
-st.set_page_config(page_title="台股量化訊號觀測站", layout="wide")
+st.set_page_config(page_title="台股精準訊號觀測站", layout="wide")
 
 # --- 1. 計算指標函數 ---
 def calculate_indicators(df):
     df = df.copy().astype(float)
-    # 移動平均線
+    # 計算 MA (使用原始 Close)
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     
@@ -26,108 +26,97 @@ def calculate_indicators(df):
     rsv = (df['Close'] - low_min) / (high_max - low_min) * 100
     df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
-    df['J'] = 3 * df['K'] - 2 * df['D']
     return df
 
-# --- 2. 策略訊號標記函數 ---
+# --- 2. 策略訊號標記 (修正價格不符問題) ---
 def get_signal_markers(df):
-    buy_prices = []
-    sell_prices = []
+    # 建立與 df 等長的空陣列
+    buy_markers = np.full(len(df), np.nan)
+    sell_markers = np.full(len(df), np.nan)
     
     for i in range(1, len(df)):
         row = df.iloc[i]
         prev_row = df.iloc[i-1]
         
-        # 預設為空值
-        buy_val = np.nan
-        sell_val = np.nan
-        
-        # --- 買入條件 (🔴) ---
-        # 邏輯：MA金叉 OR KD低檔金叉 OR RSI強勢站上50
+        # 買入條件邏輯
         if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) or \
-           (row['K'] < 25 and prev_row['K'] <= prev_row['D'] and row['K'] > row['D']) or \
+           (row['K'] < 25 and prev_row['K'] <= df.iloc[i-1]['D'] and row['K'] > row['D']) or \
            (prev_row['RSI5'] <= 50 and row['RSI5'] > 50):
-            buy_val = row['Low'] * 0.98 # 標註在最低價下方 2%
+            # 買點：精準鎖定當日最低價下方
+            buy_markers[i] = row['Low'] * 0.99 
             
-        # --- 賣出條件 (🟢) ---
-        # 邏輯：跌破MA5 OR KD高檔死叉 OR RSI跌破50
+        # 賣出條件邏輯
         elif (row['Close'] < row['MA5']) or \
-             (row['K'] > 75 and prev_row['K'] >= prev_row['D'] and row['K'] < row['D']) or \
+             (row['K'] > 75 and prev_row['K'] >= df.iloc[i-1]['D'] and row['K'] < row['D']) or \
              (prev_row['RSI5'] >= 50 and row['RSI5'] < 50):
-            sell_val = row['High'] * 1.02 # 標註在最高價上方 2%
+            # 賣點：精準鎖定當日最高價上方
+            sell_markers[i] = row['High'] * 1.01
             
-        buy_prices.append(buy_val)
-        sell_prices.append(sell_val)
-        
-    return [np.nan] + buy_prices, [np.nan] + sell_prices
+    return buy_markers, sell_markers
 
 # --- 3. UI 主程式 ---
-st.title("🚀 台股自動化訊號 K 線圖")
+st.title("📊 台股實價訊號對齊版")
 
-symbol = st.sidebar.text_input("輸入代碼", value="2330")
-st.write("### 觀測週期切換")
-p_cols = st.columns(6)
-periods = {"10天": 10, "20天": 20, "30天": 30, "60天": 60, "120天": 120, "240天": 240}
-
+symbol = st.sidebar.text_input("輸入代碼 (2330)", value="2330")
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
-for i, (lab, val) in enumerate(periods.items()):
+# 天數按鈕
+p_cols = st.columns(6)
+for i, (lab, val) in enumerate({"10天":10, "20天":20, "30天":30, "60天":60, "120天":120, "240天":240}.items()):
     if p_cols[i].button(lab):
         st.session_state.view_days = val
 
 if symbol:
-    df = yf.download(f"{symbol}.TW", period="2y", auto_adjust=True)
+    # 關鍵修正：auto_adjust=False 以獲取真實市價
+    df = yf.download(f"{symbol}.TW", period="2y", auto_adjust=False)
     if df.empty:
-        df = yf.download(f"{symbol}.TWO", period="2y", auto_adjust=True)
+        df = yf.download(f"{symbol}.TWO", period="2y", auto_adjust=False)
         
     if not df.empty:
+        # 扁平化處理 yfinance 的資料結構
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        df.columns = [str(c).capitalize() for c in df.columns]
         
         df = calculate_indicators(df)
         df['Buy_Marker'], df['Sell_Marker'] = get_signal_markers(df)
         
-        # 截取顯示區間
         view_df = df.tail(st.session_state.view_days)
         
         # --- 繪圖 ---
         fig = go.Figure()
         
-        # K線
+        # K線 (使用真實 Open, High, Low, Close)
         fig.add_trace(go.Candlestick(
-            x=view_df.index, open=view_df['Open'], high=view_df['High'],
-            low=view_df['Low'], close=view_df['Close'], name='K線'
+            x=view_df.index, 
+            open=view_df['Open'], high=view_df['High'],
+            low=view_df['Low'], close=view_df['Close'], 
+            name='真實價格'
         ))
         
-        # 均線
-        fig.add_trace(go.Scatter(x=view_df.index, y=view_df['MA5'], name='MA5', line=dict(color='orange', width=1.5)))
-        fig.add_trace(go.Scatter(x=view_df.index, y=view_df['MA10'], name='MA10', line=dict(color='cyan', width=1.5)))
+        # 均線 (MA5, MA10)
+        fig.add_trace(go.Scatter(x=view_df.index, y=view_df['MA5'], name='MA5', line=dict(color='#FFA500', width=1.5)))
+        fig.add_trace(go.Scatter(x=view_df.index, y=view_df['MA10'], name='MA10', line=dict(color='#00FFFF', width=1.5)))
         
-        # 🔴 買入訊號標記 (朝上三角形)
+        # 標註買賣點
         fig.add_trace(go.Scatter(
             x=view_df.index, y=view_df['Buy_Marker'],
-            mode='markers', name='買入訊號',
-            marker=dict(symbol='triangle-up', size=12, color='red', line=dict(width=1, color='white'))
+            mode='markers', name='策略買入',
+            marker=dict(symbol='triangle-up', size=14, color='#FF0000')
         ))
-        
-        # 🟢 賣出訊號標記 (朝下三角形)
         fig.add_trace(go.Scatter(
             x=view_df.index, y=view_df['Sell_Marker'],
-            mode='markers', name='賣出訊號',
-            marker=dict(symbol='triangle-down', size=12, color='lime', line=dict(width=1, color='white'))
+            mode='markers', name='策略賣出',
+            marker=dict(symbol='triangle-down', size=14, color='#00FF00')
         ))
         
         fig.update_layout(
-            height=700,
+            height=650,
             xaxis_rangeslider_visible=False,
             hovermode='x unified',
-            yaxis=dict(autorange=True, fixedrange=False),
-            template="plotly_dark" # 改用深色模式，訊號會更亮眼
+            yaxis=dict(autorange=True, fixedrange=False, title="價格 (TWD)"),
+            template="plotly_dark"
         )
         
         st.plotly_chart(fig, use_container_width=True)
-        
-        # 底部摘要
-        st.info(f"💡 目前顯示最近 {st.session_state.view_days} 天交易日。紅色三角形代表策略建議買進，綠色代表建議賣出。")
+        st.success(f"目前顯示為 {symbol} 的真實交易價格。")
