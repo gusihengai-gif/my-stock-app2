@@ -7,29 +7,26 @@ import numpy as np
 # --- 1. 網頁基礎配置 ---
 st.set_page_config(page_title="股票買賣時機", layout="wide")
 
-# --- 2. 技術指標計算 ---
+# --- 2. 技術指標計算 (加入緩存避免重複計算) ---
 def calculate_indicators(df):
     df = df.copy().astype(float)
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     
-    # RSI 計算
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0))
     loss = (-delta.where(delta < 0, 0))
     df['RSI5'] = 100 - (100 / (1 + (gain.rolling(5).mean() / loss.rolling(5).mean())))
     df['RSI10'] = 100 - (100 / (1 + (gain.rolling(10).mean() / loss.rolling(10).mean())))
     
-    # KDJ 計算
     low_min = df['Low'].rolling(window=9).min()
     high_max = df['High'].rolling(window=9).max()
     rsv = (df['Close'] - low_min) / (high_max - low_min) * 100
     df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
-    
     return df
 
-# --- 3. 核心訊號邏輯 (嚴格共振：賣出需同時成立) ---
+# --- 3. 核心訊號邏輯 (嚴格共振) ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
@@ -47,11 +44,7 @@ def get_signal_markers(df):
                 
         # 賣出：RSI死叉 + KDJ死叉 + 跌破5日線 (同時成立)
         elif in_position:
-            rsi_weak = (row['RSI5'] < row['RSI10'])
-            price_weak = (row['Close'] < row['MA5'])
-            kdj_weak = (row['K'] < row['D'])
-            
-            if rsi_weak and price_weak and kdj_weak:
+            if (row['RSI5'] < row['RSI10']) and (row['Close'] < row['MA5']) and (row['K'] < row['D']):
                 sell_markers[i] = row['Close']
                 in_position = False 
                 
@@ -59,33 +52,41 @@ def get_signal_markers(df):
 
 # --- 4. UI 介面 ---
 st.sidebar.title("🚀 股票買賣時機")
-symbol_input = st.sidebar.text_input("輸入股票代碼", value="2364")
+symbol_input = st.sidebar.text_input("輸入股票代碼 (例如: 2364)", value="2364")
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
 st.write("### 觀測週期選擇")
 p_cols = st.columns(6)
-for i, (lab, val) in enumerate({"10天":10, "20天":20, "30天":30, "60天":60, "120天":120, "240天":240}.items()):
+periods = {"10天": 10, "20天": 20, "30天": 30, "60天": 60, "120天": 120, "240天": 240}
+for i, (lab, val) in enumerate(periods.items()):
     if p_cols[i].button(lab):
         st.session_state.view_days = val
 
+# --- 5. 穩定版資料抓取 ---
+@st.cache_data(ttl=3600) # 緩存一小時，減少對 Yahoo 的請求
+def fetch_stock_data(symbol):
+    full_sym = f"{symbol}.TW" if "." not in symbol else symbol
+    data = yf.download(full_sym, period="2y", auto_adjust=False)
+    # 如果 .TW 沒資料嘗試 .TWO
+    if data.empty and ".TW" in full_sym:
+        full_sym = full_sym.replace(".TW", ".TWO")
+        data = yf.download(full_sym, period="2y", auto_adjust=False)
+    return data, full_symbol
+
 if symbol_input:
-    # 判斷輸入格式並自動補強
-    full_symbol = f"{symbol_input}.TW" if "." not in symbol_input else symbol_input
-    ticker = yf.Ticker(full_symbol)
-    data = ticker.history(period="2y")
-    
-    # 如果 .TW 沒資料，嘗試 .TWO (上櫃)
-    if data.empty and ".TW" in full_symbol:
-        full_symbol = full_symbol.replace(".TW", ".TWO")
-        ticker = yf.Ticker(full_symbol)
-        data = ticker.history(period="2y")
+    with st.spinner('獲取數據中...'):
+        data, final_symbol = fetch_stock_data(symbol_input)
 
     if not data.empty:
-        # 顯示股票名稱與代號
-        stock_name = ticker.info.get('shortName', '')
-        st.subheader(f"📈 {stock_name} ({full_symbol})")
+        # 直接顯示代碼，避免使用會報錯的 ticker.info
+        st.subheader(f"📈 股票行情：{final_symbol}")
+        
+        # 處理多重索引問題
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        data.columns = [str(c).strip().capitalize() for c in data.columns]
         
         df = calculate_indicators(data)
         df['買入點'], df['賣出點'] = get_signal_markers(df)
@@ -93,9 +94,10 @@ if symbol_input:
         view_df = df.tail(st.session_state.view_days).copy()
         view_df['日期顯示'] = view_df.index.strftime('%Y-%m-%d')
         
+        # --- 6. 繪圖 ---
         fig = go.Figure()
         
-        # 收盤價連線 (自定義 hovertemplate 顯示時間與價格)
+        # 收盤價主連線 (顯示時間與價格)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines', name='收盤價',
@@ -103,7 +105,7 @@ if symbol_input:
             hovertemplate="時間: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 買賣點標記
+        # 買賣標記
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['買入點'],
             mode='markers', name='重要買入',
@@ -129,7 +131,6 @@ if symbol_input:
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
-        st.warning("⚠️ 賣出門檻：RSI死叉、KDJ死叉、跌破5日線「同時成立」才會顯示。")
+        st.warning("📊 賣出條件：RSI死叉、KDJ死叉、跌破5日線「同時成立」才會顯示。")
     else:
-        st.error(f"無法找到股票代碼: {symbol_input}")
+        st.error(f"無法找到股票代碼: {symbol_input}，請確認後再輸入。")
