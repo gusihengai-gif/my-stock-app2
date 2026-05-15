@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import numpy as np
 
 # --- 1. 網頁基礎配置 ---
-st.set_page_config(page_title="2364 倫飛決策系統-終極版", layout="wide")
+st.set_page_config(page_title="2364 倫飛終極決策-嚴格版", layout="wide")
 
 # --- 2. 技術指標計算 ---
 def calculate_indicators(df):
@@ -30,7 +30,7 @@ def calculate_indicators(df):
     
     return df
 
-# --- 3. 核心訊號邏輯 (買賣一對一，每筆交易最重要) ---
+# --- 3. 核心訊號邏輯 (買賣一對一，賣出需「同時成立」) ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
@@ -41,37 +41,39 @@ def get_signal_markers(df):
         row = df.iloc[i]
         prev_row = df.iloc[i-1]
         
-        # --- 買入觸發：趨勢共振 ---
+        # --- 買入觸發：維持寬鬆共振，確保進場 ---
         if not in_position:
-            # 條件：MA5 金叉 MA10 且 RSI5 > 50 且 K > D (全面轉強)
-            if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and \
-               (row['RSI5'] > 50 and row['K'] > row['D']):
-                buy_markers[i] = row['Close'] * 0.985
+            # 條件：MA5 金叉 MA10 且 RSI5 > 50 
+            if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
+                buy_markers[i] = row['Close'] * 0.98
                 in_position = True
                 
-        # --- 賣出觸發：三重預警 (新增 KDJ 死叉) ---
+        # --- 賣出觸發：嚴格共振 (三重條件必須同時成立) ---
         elif in_position:
-            # 1. RSI 向下交叉
-            rsi_death = (prev_row['RSI5'] >= prev_row['RSI10'] and row['RSI5'] < row['RSI10'])
-            # 2. 跌破 5 日線
-            price_break = (row['Close'] < row['MA5'])
-            # 3. KDJ 死亡交叉 (K 跌破 D)
-            kdj_death = (prev_row['K'] >= prev_row['D'] and row['K'] < row['D'])
+            # 1. RSI 向下交叉 (5日 < 10日)
+            rsi_weak = (row['RSI5'] < row['RSI10'])
             
-            if rsi_death or price_break or kdj_death:
-                sell_markers[i] = row['Close'] * 1.015
-                in_position = False # 結清這筆重要交易
+            # 2. 實價跌破 5 日線 (Close < MA5)
+            price_weak = (row['Close'] < row['MA5'])
+            
+            # 3. KDJ 死亡交叉 (K < D)
+            kdj_weak = (row['K'] < row['D'])
+            
+            # 只有當三個條件同時為 True 時，才觸發賣出
+            if rsi_weak and price_weak and kdj_weak:
+                sell_markers[i] = row['Close'] * 1.02
+                in_position = False 
                 
     return buy_markers, sell_markers
 
 # --- 4. UI 介面與資料呈現 ---
-st.title("📊 2364 倫飛 - 終極實價決策系統")
+st.title("📊 2364 倫飛 - 嚴格共振決策系統")
 symbol = st.sidebar.text_input("輸入股票代碼", value="2364")
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
-st.write("### 觀測週期")
+st.write("### 觀測週期 (不含假日)")
 p_cols = st.columns(6)
 for i, (lab, val) in enumerate({"10天":10, "20天":20, "30天":30, "60天":60, "120天":120, "240天":240}.items()):
     if p_cols[i].button(lab):
@@ -95,11 +97,11 @@ if symbol:
         
         fig = go.Figure()
         
-        # 收盤價主線
+        # 收盤價連線
         fig.add_trace(go.Scatter(
             x=view_df['日期'], y=view_df['Close'],
             mode='lines', name='收盤價',
-            line=dict(color='#FFFFFF', width=2.5),
+            line=dict(color='#FFFFFF', width=2),
             hoverinfo='y'
         ))
         
@@ -109,7 +111,7 @@ if symbol:
             line=dict(color='#FFA500', width=1, dash='dot'), hoverinfo='none'
         ))
         
-        # 重要買賣點 (加大符號，強化視覺)
+        # 買賣標記
         fig.add_trace(go.Scatter(
             x=view_df['日期'], y=df.loc[view_df.index, '買入點'],
             mode='markers', name='【重要買入】',
@@ -128,21 +130,20 @@ if symbol:
             height=650,
             xaxis_rangeslider_visible=False,
             hovermode='x unified',
-            xaxis=dict(type='category', title="交易日 (扣除假日)", fixedrange=True, tickangle=45),
-            yaxis=dict(autorange=True, fixedrange=True, title="實價 (數字)", tickformat='.2f'),
+            xaxis=dict(type='category', title="交易日", fixedrange=True, tickangle=45),
+            yaxis=dict(autorange=True, fixedrange=True, title="實價 (TWD)", tickformat='.2f'),
             template="plotly_dark",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
-        # 狀態摘要
-        curr = view_df.iloc[-1]
-        st.write(f"#### 📝 今日監測指標 ({symbol})")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("收盤實價", f"{curr['Close']:.2f}")
-        c2.metric("RSI5 強度", f"{curr['RSI5']:.1f}")
-        c3.metric("K值 (轉折)", f"{curr['K']:.1f}")
-        c4.metric("D值 (平滑)", f"{curr['D']:.1f}")
+        # 底部狀態提示
+        st.warning("⚠️ 賣出門檻已調高：必須同時滿足「RSI向下交叉」、「KDJ死亡交叉」、「收盤跌破5日線」三項條件才會出現賣出訊號。")
         
-        st.success("✅ 賣出依據：RSI 死叉、KDJ 死叉、或跌破 5 日均線。三道防線已就緒。")
+        curr = view_df.iloc[-1]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("收盤價", f"{curr['Close']:.2f}")
+        c2.metric("RSI5", f"{curr['RSI5']:.1f}")
+        c3.metric("K值", f"{curr['K']:.1f}")
+        c4.metric("D值", f"{curr['D']:.1f}")
