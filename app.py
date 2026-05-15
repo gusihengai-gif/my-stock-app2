@@ -1,7 +1,6 @@
-import streamlit as st
 import pandas as pd
+import pandas_ta as ta  # 確保這行在 yfinance 之前
 import yfinance as yf
-import pandas_ta as ta
 
 # 設定網頁標題與寬度
 st.set_page_config(page_title="台股量化交易策略觀測站", layout="wide")
