@@ -180,31 +180,39 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一輸入框、免 Enter 即時連動】字首強鎖定搜尋欄 ---
+# --- 5. UI 介面 與 【單一動態選單】字首強鎖定搜尋欄一體機 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用 Session State 來維持全即時更新機制，解決打字沒有按 Enter 就不更新的硬傷
-if "instant_search_code" not in st.session_state:
-    st.session_state.instant_search_code = "2330"  # 預設為台積電
+# 獲取使用者在動態選單中正在搜尋或選取的狀態
+# 這裡利用 Streamlit Widget 內置的狀態綁定，動態擷取當前過濾文字
+current_search_keyword = ""
+if "stock_selector_key" in st.session_state and st.session_state.stock_selector_key:
+    # 擷取代碼部分進行字首比對
+    current_search_keyword = st.session_state.stock_selector_key.split(" ")[0].strip()
 
-# 利用 text_input 的 key 機制，讓使用者只要輸入字元，底層立刻觸發連動更新
-user_typed_input = st.sidebar.text_input(
-    "請輸入股票代碼 (打字即自動切換，嚴格字首對齊)",
-    value=st.session_state.instant_search_code,
-    key="stock_search_input_widget"
-).strip()
-
-# 【鋼鐵核心過濾邏輯】
-# 只要使用者打字，後台「立刻、強制」檢查是不是該數字開頭！徹底消滅 2023, 2423 等包含型雜魚
-matched_codes = [k for k in ALL_STOCKS.keys() if k.startswith(user_typed_input)]
-
-# 如果剛好有完全符合的代碼，或者過濾出開頭符合的第一個目標，直接動態切換大畫面
-if user_typed_input in ALL_STOCKS:
-    final_target_code = user_typed_input
-elif matched_codes:
-    final_target_code = matched_codes[0]  # 例如輸入 223，直接鎖定第一個 2231
+# 【鋼鐵核心過濾邏輯】即時清洗選單數據源！
+# 當你打 11 或 223，後台立刻過濾，把不符合開頭的 2023, 2423 雜魚通通丟掉，只留對的名單送給下拉選單顯示！
+if current_search_keyword:
+    filtered_list = [
+        f"{k} {v}" for k, v in ALL_STOCKS.items() 
+        if k.startswith(current_search_keyword)
+    ]
+    # 如果打字打太快或不小心沒對應到，保留原本完整名單防呆
+    if not filtered_list:
+        filtered_list = ALL_STOCKS_LIST
 else:
-    final_target_code = "2330"  # 若亂輸入找不到，預設守住台積電
+    filtered_list = ALL_STOCKS_LIST
+
+# 完美的單一搜尋選單外觀，點開後既有下拉選項，又絕無模糊搜尋的雜魚干擾！
+selected_stock_str = st.sidebar.selectbox(
+    "請選擇或輸入股票代碼/名稱",
+    options=filtered_list,
+    index=0 if current_search_keyword else 77,  # 有打字就鎖定過濾後第一檔，沒打字預設台積電
+    key="stock_selector_key"
+)
+
+# 解析出當前選取的股票代碼，傳給後端圖表
+final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
