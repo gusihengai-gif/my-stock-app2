@@ -198,15 +198,10 @@ search_input_val = st.sidebar.text_input(
 # 生成符合 HTML 標準的 datalist 標籤，把台股名單餵進去
 datalist_options_html = "".join([f'<option value="{item}">' for item in ALL_STOCKS_LIST])
 
-# 利用前端 JavaScript 動態攔截輸入框：
-# 1. 關閉瀏覽器自帶的討人厭歷史紀錄 (autocomplete="off")
-# 2. 將 HTML5 的 datalist 直接綁定到這個輸入框上，讓它打字時自動彈出原生選單
-# 3. 核心過濾邏輯：重寫模糊搜尋，強迫改為「字首對齊」！只要代碼不是打的數字開頭，直接在選單隱藏！
-# 4. 監聽 input 事件，只要使用者滑鼠點擊選單或打字完全匹配，立刻模擬 Enter 送出，大圖表直接動態更新！
+# 利用前端 JavaScript 動態攔截輸入框（已修正 Python f-string 雙大括號逸失問題）
 js_injector = f"""
 <script>
     function patchStreamlitInput() {{
-        // 遍歷所有主頁面與側邊欄的輸入框
         var inputs = window.parent.document.querySelectorAll('input[type="text"]');
         inputs.forEach(function(input) {{
             if (!input.hasAttribute('list')) {{
@@ -222,21 +217,20 @@ js_injector = f"""
                     
                     // 鋼鐵限制：動態過濾下拉選單內容，只允許「字首完全符合」的項目顯示
                     options.forEach(function(opt) {{
-                        var optVal = opt.value; // 例如 "2231 為升"
+                        var optVal = opt.value;
                         if (optVal.startsWith(currentVal)) {{
                             opt.disabled = false;
-                        } else {{
-                            opt.disabled = true; // 首碼不符，直接閹割隱藏，絕無雜魚
+                        }} else {{
+                            opt.disabled = true;
                         }}
                     }});
                     
                     // 如果輸入的值剛好完美對應名單中的某個項目，或者打滿了4位代碼且存在於選單，直接觸發變更
                     options.forEach(function(opt) {{
                         if (opt.value === currentVal || opt.value.split(' ')[0] === currentVal) {{
-                            if(opt.value === currentVal) {{
-                                e.target.value = opt.value.split(' ')[0]; // 自動校正回純代碼送給後台
+                            if (opt.value === currentVal) {{
+                                e.target.value = opt.value.split(' ')[0];
                             }}
-                            // 模擬按下 Enter 鍵讓 Streamlit 後台即時重新渲染圖表
                             var event = new KeyboardEvent('keydown', {{
                                 bubbles: true, cancelable: true, key: 'Enter', keyCode: 13
                             }});
@@ -248,7 +242,6 @@ js_injector = f"""
         }});
     }}
     
-    // 確保在 Streamlit DOM 加載完成後以及定時反覆檢查注入，防止組件刷新失效
     if (window.parent.document.readyState === 'complete') {{
         patchStreamlitInput();
     }}
@@ -259,13 +252,12 @@ js_injector = f"""
     {datalist_options_html}
 </datalist>
 """
-# 將這段不影響外觀的控制腳本靜默注入到頁面中
+# 將控制腳本靜默注入到頁面中
 components.html(js_injector, height=0, width=0)
 
 # 解析並防呆最終要繪製的股票代碼
 final_target_code = search_input_val.split(" ")[0]
 if not final_target_code or final_target_code not in ALL_STOCKS:
-    # 如果使用者正在打字途中（例如只打了 2、12、223 尚未完成選擇），維持畫面上一次的股票，不要崩潰噴錯
     if 'last_valid_stock' not in st.session_state:
         st.session_state.last_valid_stock = "2330"
     final_target_code = st.session_state.last_valid_stock
