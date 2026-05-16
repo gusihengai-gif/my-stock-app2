@@ -1,47 +1,3 @@
-import streamlit as st
-import pandas as pd
-import yfinance as yf
-import plotly.graph_objects as go
-import numpy as np
-import urllib.request
-import json
-
-# --- 1. 網頁基礎配置 ---
-st.set_page_config(page_title="股票買賣時機", layout="wide")
-
-# --- 2. 全台灣股票/ETF 中文名稱全自動查詢（支援 1605 等所有本土與非本土股票） ---
-@st.cache_data(ttl=86400) # 快取一天，避免重複查詢，速度極快
-def get_stock_display_name(symbol):
-    pure_code = symbol.split('.')[0].strip()
-    
-    try:
-        # 1. 查詢所有上市公司每日收盤行情 (包含華新 1605 等所有本土上市)
-        url_l = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-        req_l = urllib.request.Request(url_l, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req_l) as response:
-            res_data = json.loads(response.read().decode('utf-8'))
-            for item in res_data:
-                if item.get('Code') == pure_code or item.get('證券代號') == pure_code:
-                    name = item.get('Name') or item.get('證券名稱')
-                    if name:
-                        return f"{name.strip()} ({symbol})"
-                        
-        # 2. 若上市找不到，查詢所有上櫃公司每日收盤行情
-        url_o = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
-        req_o = urllib.request.Request(url_o, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req_o) as response:
-            res_data = json.loads(response.read().decode('utf-8'))
-            for item in res_data:
-                if item.get('SecuritiesCompanyCode') == pure_code or item.get('代號') == pure_code:
-                    name = item.get('CompanyName') or item.get('名稱')
-                    if name:
-                        return f"{name.strip()} ({symbol})"
-    except Exception:
-        pass
-        
-    # 第三道防線：萬一網路異常或新股上市未列入，回傳原始代碼，確保程式不崩潰
-    return symbol
-
 # --- 3. 技術指標計算 ---
 def calculate_indicators(df):
     df = df.copy().astype(float)
@@ -89,7 +45,7 @@ def get_signal_markers(df):
 
 # --- 5. UI 介面 ---
 st.sidebar.title("🚀 股票買賣時機")
-symbol_input = st.sidebar.text_input("輸入股票代碼", value="1605") # 預設改為 1605 方便測試
+symbol_input = st.sidebar.text_input("輸入股票代碼", value="1605")
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -115,7 +71,7 @@ if symbol_input:
     data, final_symbol = fetch_stock_data(symbol_input)
 
     if not data.empty:
-        # 【完美修正】現在 1605 會正確顯示為：華新 (1605.TW)
+        # 呼叫鋼鐵級名稱轉換函數
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
@@ -167,7 +123,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 賣出點（🟢 綠色圓點 + 滿足條件）
+        # 賣出點 (🟢 綠色圓點 + 條件顯示)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
