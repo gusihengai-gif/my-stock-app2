@@ -128,8 +128,9 @@ ALL_STOCKS = {
 import streamlit as pd
 from streamlit_searchbox import st_searchbox
 import streamlit.components.v1 as components
+import json
 
-# 格式化選單名稱
+# 格式化選單名稱（供後台 yfinance 匹配使用）
 ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
 
 def get_stock_display_name(symbol):
@@ -184,37 +185,109 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一極簡搜尋欄：純 Python 字首鎖定機制】 ---
+# --- 5. UI 介面 與 【單一原生 JavaScript 即時連動搜尋欄】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用 session_state 記憶最終確定的股票代碼（預設台積電）
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 唯一的、純淨的文字搜尋欄
-search_query = st.sidebar.text_input(
-    "請輸入股票代碼：",
-    value=st.session_state.final_target_code,
-    key="pure_text_search_widget"
-).strip()
+# 將 Python 的台股字典轉換成前端 JavaScript 能秒速過濾的 JSON 格式
+stocks_json = json.dumps(ALL_STOCKS)
 
-# 鋼鐵字首判定核心
-if search_query:
-    # 檢查輸入的內容是否存在於台股代碼中，且必須是完整的代碼
-    if search_query in ALL_STOCKS:
-        st.session_state.final_target_code = search_query
-    else:
-        # 模糊匹配封殺機制：嘗試找出「以此開頭」的代碼
-        matched_keys = [k for k in ALL_STOCKS.keys() if k.startswith(search_query)]
+# 透過前端監聽 input 事件，繞過 Streamlit 必須按 Enter 的硬傷，同時強制 startWith 字首鎖定
+custom_search_html = f"""
+<div style="font-family: sans-serif; color: #ffffff; padding: 0px; margin: 0px;">
+    <label style="font-size: 14px; font-weight: 500; display: block; margin-bottom: 8px;">請輸入股票代碼：</label>
+    <div style="position: relative; width: 100%;">
+        <input type="text" id="stockSearchInput" placeholder="🔍 輸入代碼即時字首過濾..." 
+            style="width: 100%; padding: 10px 12px; background-color: #1A1C24; color: #ffffff; 
+                   border: 1px solid #4A4A4A; border-radius: 8px; font-size: 15px; outline: none; box-sizing: border-box;">
+        <div id="dropdownList" 
+            style="position: absolute; top: 44px; left: 0; width: 100%; max-height: 250px; overflow-y: auto; 
+                   background-color: #1A1C24; border: 1px solid #4A4A4A; border-radius: 8px; 
+                   box-shadow: 0px 8px 16px rgba(0,0,0,0.5); z-index: 9999; display: none; box-sizing: border-box;">
+        </div>
+    </div>
+</div>
+
+<script>
+    const stocksData = {stocks_json};
+    const inputField = document.getElementById('stockSearchInput');
+    const dropdown = document.getElementById('dropdownList');
+
+    // 當使用者手打任何字，不用等 Enter，直接毫秒級即時觸發過濾
+    inputField.addEventListener('input', function() {{
+        const query = this.value.trim();
+        dropdown.innerHTML = '';
         
-        # 如果剛好只找到一檔，或者輸入部分長度時直接精準鎖定
-        if len(matched_keys) == 1:
-            st.session_state.final_target_code = matched_keys[0]
-        elif len(matched_keys) > 1 and search_query in matched_keys:
-            st.session_state.final_target_code = search_query
-        else:
-            # 當你還在打字途中（如只打了 2、21、233 尚未完成時），保持在大畫面不跳轉，絕不崩潰
-            pass
+        if (!query) {{
+            dropdown.style.display = 'none';
+            return;
+        }}
+
+        let hasMatches = false;
+        
+        // 核心鋼鐵字首篩選：絕對限制只抓開頭相符的
+        for (const [code, name] of Object.entries(stocksData)) {{
+            if (code.startsWith(query)) {{
+                hasMatches = true;
+                const item = document.createElement('div');
+                item.style.padding = '10px 14px';
+                item.style.cursor = 'pointer';
+                item.style.fontSize = '14px';
+                item.style.borderBottom = '1px solid #2D313E';
+                item.style.color = '#E0E0E0';
+                item.innerText = code + ' ' + name;
+
+                // 滑鼠移入高亮效果
+                item.onmouseover = function() {{ this.style.backgroundColor = '#2D313E'; this.style.color = '#ffffff'; }};
+                item.onmouseout = function() {{ this.style.backgroundColor = 'transparent'; this.style.color = '#E0E0E0'; }};
+                
+                // 點擊選項，免按 Enter 直接更新
+                item.onclick = function() {{
+                    inputField.value = code;
+                    dropdown.style.display = 'none';
+                    
+                    // 將選定的代碼回傳給 Streamlit 後台更新大圖表
+                    const token = Math.random().toString(36);
+                    window.parent.postMessage({{
+                        type: 'streamlit:set_widget_value',
+                        key: 'js_selected_stock',
+                        value: code + '|' + token
+                    }}, '*');
+                }};
+                dropdown.appendChild(item);
+            }}
+        }}
+
+        if (hasMatches) {{
+            dropdown.style.display = 'block';
+        }} else {{
+            dropdown.style.display = 'none';
+        }}
+    }});
+
+    // 點擊網頁外圍自動收起下拉選單
+    document.addEventListener('click', function(e) {{
+        if (!inputField.contains(e.target) && !dropdown.contains(e.target)) {{
+            dropdown.style.display = 'none';
+        }}
+    }});
+</script>
+"""
+
+# 在側邊欄建立這根乾淨無瑕、能夠即時連動的前端搜尋元件
+with st.sidebar:
+    components.html(custom_search_html, height=310, scrolling=False)
+
+# 在 Python 後台隱藏式接收前端傳回來的確定代碼
+if "js_selected_stock" in st.session_state and st.session_state.js_selected_stock:
+    raw_val = st.session_state.js_selected_stock
+    if "|" in raw_val:
+        selected_code = raw_val.split("|")[0]
+        if selected_code != st.session_state.final_target_code:
+            st.session_state.final_target_code = selected_code
+            st.rerun()
 
 final_target_code = st.session_state.final_target_code
 
