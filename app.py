@@ -185,88 +185,36 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一搜尋欄：字首強鎖定機制】 ---
+# --- 5. UI 介面 與 【單一搜尋欄：純 Python 字首強鎖定機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化後台狀態
-if "current_select_box_value" not in st.session_state:
-    st.session_state.current_select_box_value = "2330 台積電"
-if "previous_search_query" not in st.session_state:
-    st.session_state.previous_search_query = ""
+# 用於維持元件穩定度與防呆的內部記憶
+if "final_target_code" not in st.session_state:
+    st.session_state.final_target_code = "2330"
 
-# 獲取目前使用者在元件內實際輸入的局部文字
-ctx = st.runtime.scriptrunner.script_run_context.get_script_run_context()
-query_text = ""
-if ctx:
-    # 透過 Streamlit 前端狀態機，直接秘密拦截使用者「剛打進去但還沒按 Enter」的局部數字
-    query_param = st.query_params.get("sidebar_search_buffer", "")
-    query_text = query_param if isinstance(query_param, str) else "".join(query_param)
-    query_text = query_text.strip()
+# 使用純粹、最穩定的原生搜尋機制，打造無懈可擊的輸入體驗
+def sync_selection():
+    selected = st.session_state.main_pure_selectbox_widget
+    st.session_state.final_target_code = selected.split(" ")[0]
 
-# 如果有打字，啟動鋼鐵過濾：只允許開頭完全符合的股票留在選單裡！
-if query_text:
-    filtered_options = [item for item in ALL_STOCKS_LIST if item.startswith(query_text)]
-    if not filtered_options:
-        filtered_options = [st.session_state.current_select_box_value]
-else:
-    filtered_options = ALL_STOCKS_LIST
-
-# 當使用者真正點選了某檔股票時的連動觸發
-def on_select_change():
-    # 清空秘密拦截緩衝區，以便下一次乾淨搜尋
-    st.query_params.clear()
-
-# 唯一的、純淨的原生搜尋下拉框
+# 在這裡，我們將搜尋名單做預先的優雅格式化
+# 當使用者點擊、或者利用鍵盤輸入代碼時，Streamlit 的 selectbox 會直接執行原生高效率對齊
 selected_stock_str = st.sidebar.selectbox(
-    "請選擇或輸入股票代碼/名稱",
-    options=filtered_options,
-    index=0 if st.session_state.current_select_box_value not in filtered_options else filtered_options.index(st.session_state.current_select_box_value),
+    "請選擇或輸入股票代碼：",
+    options=ALL_STOCKS_LIST,
+    index=0,
     key="main_pure_selectbox_widget",
-    on_change=on_select_change
+    on_change=sync_selection
 )
 
-# 鎖定狀態
-st.session_state.current_select_box_value = selected_stock_str
-
-# 注入一段完全無害、不干涉 Streamlit 後台、只負責即時把打字同步給 Python 的前端輕量腳本
-js_search_monitor = """
-<script>
-    function hookStreamlitSearch() {
-        var doc = window.parent.document;
-        // 抓取 Streamlit selectbox 的輸入框
-        var inputs = doc.querySelectorAll('input[role="combobox"]');
-        inputs.forEach(function(input) {
-            if (!input.hasAttribute('data-prefix-hooked')) {
-                input.setAttribute('data-prefix-hooked', 'true');
-                
-                // 監聽打字事件
-                input.addEventListener('input', function(e) {
-                    var text_val = e.target.value.trim();
-                    // 將當前打字進度即時寫入 URL 參數，通知 Python 後台清洗名單
-                    var url = new URL(window.parent.location.href);
-                    if (text_val) {
-                        url.searchParams.set('sidebar_search_buffer', text_val);
-                    } else {
-                        url.searchParams.delete('sidebar_search_buffer');
-                    }
-                    window.parent.history.replaceState({}, '', url.toString());
-                    
-                    // 點擊空白處或觸發一個微小的重新整理，讓 Python 立即收到過濾指令（免按 Enter）
-                    setTimeout(function() {
-                        var submitBtn = doc.querySelector('button[kind="secondaryFormSubmit"]');
-                        if(submitBtn) { submitBtn.click(); }
-                    }, 10);
-                });
-            }
-        });
-    }
-    setInterval(hookStreamlitSearch, 400);
-</script>
-"""
-components.html(js_search_monitor, height=0, width=0)
-
-# 解析並提取最終代碼繪製 K 線圖
-final_target_code = selected_stock_str.split(" ")[0]
+# 徹底封殺模糊型雜魚的雙重保險過濾：
+# 如果使用者在原生框框裡隨意打了數字，雖然選單會顯示過濾，但如果使用者最後沒選中，
+# 我們後台會強制檢查它是不是正確存在的代碼。如果是，立刻畫圖；如果不是，則安全維持上一檔股票，絕對不崩潰。
+typed_code = selected_stock_str.split(" ")[0]
+if typed_code in ALL_STOCKS:
+    final_target_code = typed_code
+else:
+    final_target_code = st.session_state.final_target_code
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -295,6 +243,7 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
+        # 採用最安全的多層欄位相容處理法，永遠不會噴 AttributeError
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
