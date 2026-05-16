@@ -185,36 +185,55 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一搜尋欄：純 Python 字首強鎖定機制】 ---
+# --- 5. UI 介面 與 【單一搜尋欄：鋼鐵字首對齊機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用於維持元件穩定度與防呆的內部記憶
+# 初始化後台記憶狀態
 if "final_target_code" not in st.session_state:
-    st.session_state.final_target_code = "2330"
+    st.session_state.final_target_code = "2330" # 預設台積電
+if "input_buffer" not in st.session_state:
+    st.session_state.input_buffer = "2330"
 
-# 使用純粹、最穩定的原生搜尋機制，打造無懈可擊的輸入體驗
-def sync_selection():
-    selected = st.session_state.main_pure_selectbox_widget
-    st.session_state.final_target_code = selected.split(" ")[0]
+# 當使用者在文字框改字時（支援免按 Enter 與失去焦點連動機制）
+def on_text_changed():
+    val = st.session_state.pure_text_search_widget.strip()
+    st.session_state.input_buffer = val
+    # 如果剛好輸入完整 4 碼且存在於台股名單，自動判定切換
+    if val in ALL_STOCKS:
+        st.session_state.final_target_code = val
 
-# 在這裡，我們將搜尋名單做預先的優雅格式化
-# 當使用者點擊、或者利用鍵盤輸入代碼時，Streamlit 的 selectbox 會直接執行原生高效率對齊
-selected_stock_str = st.sidebar.selectbox(
-    "請選擇或輸入股票代碼：",
-    options=ALL_STOCKS_LIST,
-    index=0,
-    key="main_pure_selectbox_widget",
-    on_change=sync_selection
-)
+# 唯一的、乾淨的單一搜尋欄
+search_query = st.sidebar.text_input(
+    "請輸入股票代碼 (支援字首強鎖定)：",
+    value=st.session_state.input_buffer,
+    key="pure_text_search_widget",
+    on_change=on_text_changed
+).strip()
 
-# 徹底封殺模糊型雜魚的雙重保險過濾：
-# 如果使用者在原生框框裡隨意打了數字，雖然選單會顯示過濾，但如果使用者最後沒選中，
-# 我們後台會強制檢查它是不是正確存在的代碼。如果是，立刻畫圖；如果不是，則安全維持上一檔股票，絕對不崩潰。
-typed_code = selected_stock_str.split(" ")[0]
-if typed_code in ALL_STOCKS:
-    final_target_code = typed_code
-else:
-    final_target_code = st.session_state.final_target_code
+# 隨時確保後台的打字緩衝區與當前輸入同步
+st.session_state.input_buffer = search_query
+
+# 核心鋼鐵字首過濾：只要輸入 223，名單就「只准出現」223 開頭的股票，模糊雜魚通通剔除！
+if search_query:
+    matched_stocks = [
+        (k, v) for k, v in ALL_STOCKS.items()
+        if k.startswith(search_query)
+    ]
+    
+    if matched_stocks:
+        st.sidebar.write("🎯 **請點擊下方符合字首的股票切換：**")
+        # 直接把所有符合字首開頭的股票，做成一個個好看的直排按鈕
+        # 你輸入 223，這裡展開就絕對只有 2231、2233、2236 等，那些 2023、2423 雜魚直接出局！
+        for k, v in matched_stocks[:10]: # 最多顯示前 10 檔避免畫面太長
+            if st.sidebar.button(f"📊 {k} {v}", key=f"btn_{k}"):
+                st.session_state.final_target_code = k
+                st.session_state.input_buffer = k
+                st.rerun()
+    else:
+        st.sidebar.error("❌ 找不到此字首開頭的股票")
+
+# 最終確定要拿去抓取 K 線圖的正確代碼
+final_target_code = st.session_state.final_target_code
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -243,7 +262,6 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        # 採用最安全的多層欄位相容處理法，永遠不會噴 AttributeError
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
