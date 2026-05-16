@@ -125,6 +125,9 @@ ALL_STOCKS = {
     "00943": "兆豐電子高息等權重", "00944": "野村趨勢動能高股息", "00946": "群益科技高股息成長"
 }
 
+import streamlit as pd
+from streamlit_searchbox import st_searchbox
+
 # 格式化選單名稱
 ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
 
@@ -180,57 +183,36 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【無雜魚、字首強鎖定自動補全】單一搜尋欄 ---
+# --- 5. UI 介面 與 【字首強鎖定】專用搜尋組件 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化預設股票
-if "pure_search_value" not in st.session_state:
-    st.session_state.pure_search_value = "2330"
-
-# 使用 text_input 接收打字，使用者手只要一動，後台立刻拿取字串進行即時清洗
-user_typed_code = st.sidebar.text_input(
-    "請輸入股票代碼 (支援免按 Enter 即時連動)",
-    value=st.session_state.pure_search_value,
-    key="realtime_text_input_widget"
-).strip()
-
-# 【鋼鐵核心過濾邏輯】強迫實施字首對齊，只要不是打的數字開頭，一律不放進清單
-if user_typed_code:
-    clean_typed = user_typed_code.split(" ")[0] # 避免選取後帶有股票名稱干擾
-    filtered_list = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items() 
-        if k.startswith(clean_typed)
+# 核心篩選函數：當使用者在前端搜尋框打字時，這個函數會被即時觸發
+# 它會完全覆蓋並取代元件內建的模糊搜尋，強迫實施「字首對齊」！
+def stock_prefix_search_cb(search_term: str):
+    if not search_term:
+        return ALL_STOCKS_LIST[:100]  # 未輸入時，預設展示前100檔股票
+    
+    clean_term = search_term.strip()
+    # 鋼鐵字首過濾邏輯：只有股票代碼是該數字開頭的，才允許放入下拉選單！
+    filtered = [
+        f"{k} {v}" for k, v in ALL_STOCKS.items()
+        if k.startswith(clean_term)
     ]
-else:
-    filtered_list = ALL_STOCKS_LIST
+    return filtered if filtered else ["找不到符合的股票"]
 
-# 如果剛好沒對齊到任何代碼，防呆保留全股票名單
-if not filtered_list:
-    filtered_list = ALL_STOCKS_LIST
-
-# 黑科技核心：利用 HTML5 注入 datalist，讓這個輸入框擁有完美乾淨的下拉選單，且絕對無模糊搜尋雜魚！
-options_html = "".join([f'<option value="{opt}">' for opt in filtered_list])
-st.sidebar.markdown(
-    f"""
-    <datalist id="stock_clean_options">
-        {options_html}
-    </datalist>
-    <script>
-        var input = window.parent.document.querySelector('input[aria-label="請輸入股票代碼 (支援免按 Enter 即時連動)"]');
-        if (input) {{
-            input.setAttribute("list", "stock_clean_options");
-            input.setAttribute("autocomplete", "off");
-        }}
-    </script>
-    """,
-    unsafe_allow_html=True
+# 使用 searchbox 組件，外觀上完全是一體化的完美搜尋選單
+selected_stock_str = st_searchbox(
+    search_function=stock_prefix_search_cb,
+    placeholder="請輸入股票代碼 (例: 66)",
+    default="2330 台積電",
+    key="stock_searchbox_unique"
 )
 
-# 解析出當前選取的股票代碼，並即時回傳給後端圖表
-final_target_code = user_typed_code.split(" ")[0]
-if final_target_code not in ALL_STOCKS and filtered_list:
-    # 如果使用者正在打字尚未輸入完整，預設直接抓取過濾後的第一檔股票，達到免 Enter 的即時大畫面更新！
-    final_target_code = filtered_list[0].split(" ")[0]
+# 防止未選取或無匹配時崩潰，預設給予台積電
+if not selected_stock_str or selected_stock_str == "找不到符合的股票":
+    final_target_code = "2330"
+else:
+    final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
