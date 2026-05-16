@@ -185,98 +185,55 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【鋼鐵字首鎖定單一搜尋欄】 ---
+# --- 5. UI 介面 與 【單一搜尋欄：純 Python 鋼鐵字首鎖定機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用 session_state 確保輸入期間圖表不會斷火
+# 初始化後台安全儲存區，確保打字途中圖表穩定
 if "final_target_code" not in st.session_state:
-    st.session_state.final_target_code = "2330"
-if "stable_input_value" not in st.session_state:
-    st.session_state.stable_input_value = "2330"
+    st.session_state.final_target_code = "2330"  # 預設台積電
+if "input_buffer" not in st.session_state:
+    st.session_state.input_buffer = "2330"
 
-# 使用原生的 text_input 作為純淨唯一的搜尋欄外觀
-search_input_val = st.sidebar.text_input(
-    "輸入股票代碼：",
-    value=st.session_state.stable_input_value,
-    key="stock_search_input_field"
+# 核心同步監聽：當使用者在輸入框修改內容時
+def on_text_changed():
+    val = st.session_state.pure_text_search_widget.strip()
+    st.session_state.input_buffer = val
+    # 如果剛好輸入完整 4 碼且存在於台股名單，主動切換大圖表
+    if val in ALL_STOCKS:
+        st.session_state.final_target_code = val
+
+# 唯一的、純淨的文字搜尋輸入框（徹底代替原本會模糊匹配的原生 selectbox）
+search_query = st.sidebar.text_input(
+    "請輸入股票代碼 (字首強鎖定)：",
+    value=st.session_state.input_buffer,
+    key="pure_text_search_widget",
+    on_change=on_text_changed
 ).strip()
 
-# 將台股資料打包成標準的 HTML5 datalist 清單
-datalist_options_html = "".join([f'<option value="{item}">' for item in ALL_STOCKS_LIST])
+# 隨時保持後台緩衝與輸入內容同步
+st.session_state.input_buffer = search_query
 
-# 鋼鐵過濾核心：直接用前端原生腳本接管輸入框的下拉行為
-js_injector = f"""
-<script>
-    function applyStrictPrefixFilter() {{
-        var doc = window.parent.document;
-        // 抓取畫面上所有的文字輸入框
-        var inputs = doc.querySelectorAll('input[type="text"]');
-        
-        inputs.forEach(function(input) {{
-            if (!input.hasAttribute('list')) {{
-                // 1. 強行綁定客製化數據來源，徹底關閉瀏覽器自帶的歷史紀錄
-                input.setAttribute('list', 'strict_stock_datalist');
-                input.setAttribute('autocomplete', 'off');
-                
-                // 2. 鋼鐵過濾機制：只要使用者一打字，立刻把「非打字開頭」的選項全部閹割
-                input.addEventListener('input', function(e) {{
-                    var typedText = e.target.value.trim();
-                    var datalist = doc.getElementById('strict_stock_datalist');
-                    if (!datalist) return;
-                    var options = datalist.querySelectorAll('option');
-                    
-                    options.forEach(function(opt) {{
-                        var stockVal = opt.value; // 例如 "2101 泰豐"
-                        // 嚴格比對開頭！你打 21xx，開頭不是 21 的直接被隱藏，12xx 或 24xx 雜魚直接清除
-                        if (stockVal.startsWith(typedText)) {{
-                            opt.disabled = false;
-                        }} else {{
-                            opt.disabled = true;
-                        }}
-                    }});
-                    
-                    // 3. 免按 Enter 聯動機制：只要點選了選項，或是輸入滿 4 碼且存在於名單，直接模擬 Enter 重新渲染圖表
-                    options.forEach(function(opt) {{
-                        var pureCode = opt.value.split(' ')[0];
-                        if (opt.value === typedText || pureCode === typedText) {{
-                            if (opt.value === typedText) {{
-                                e.target.value = pureCode; // 自動校正回 4 碼代號
-                            }}
-                            // 模擬鍵盤 Enter
-                            var event = new KeyboardEvent('keydown', {{
-                                bubbles: true, cancelable: true, key: 'Enter', keyCode: 13
-                            }});
-                            e.target.dispatchEvent(event);
-                        }}
-                    }});
-                }});
-            }}
-        }});
-    }}
+# 鋼鐵字首過濾核心：強迫校正，只准抓出開頭完美的股票
+if search_query:
+    matched_stocks = [
+        (k, v) for k, v in ALL_STOCKS.items()
+        if k.startswith(search_query)
+    ]
     
-    // 定時反覆巡邏，防止 Streamlit 組件刷新時失效
-    if (window.parent.document.readyState === 'complete') {{
-        applyStrictPrefixFilter();
-    }}
-    setInterval(applyStrictPrefixFilter, 400);
-</script>
+    if matched_stocks:
+        st.sidebar.write("🎯 **符合字首的股票 (請點擊切換)：**")
+        
+        # 轉化為極好點擊的動態直排按鈕，輸入 223 就絕對只有 2231、2233 等按鈕！
+        # 點擊任何一檔，輸入框會同步填滿，大圖表秒速更新切換
+        for k, v in matched_stocks[:10]:  # 限制最多顯示前 10 檔最直覺
+            if st.sidebar.button(f"📊 {k} {v}", key=f"btn_{k}", use_container_width=True):
+                st.session_state.final_target_code = k
+                st.session_state.input_buffer = k
+                st.rerun()
+    else:
+        st.sidebar.error("❌ 找不到此字首開頭的股票")
 
-<datalist id="strict_stock_datalist">
-    {datalist_options_html}
-</datalist>
-"""
-# 靜默注入前端控制碼（畫面上完全隱形，不影響版面）
-components.html(js_injector, height=0, width=0)
-
-# 解析並防呆最終拿去繪圖的代碼
-extracted_code = search_input_val.split(" ")[0]
-if extracted_code in ALL_STOCKS:
-    st.session_state.final_target_code = extracted_code
-    st.session_state.stable_input_value = extracted_code
-else:
-    # 當你正在打字途中（如只打了 2、21、233 尚未完成時），保持大圖表在上一檔看過的股票，絕不崩潰或噴錯
-    pass
-
+# 最終確定傳送給 yfinance 計算指標的代碼
 final_target_code = st.session_state.final_target_code
 
 if 'view_days' not in st.session_state:
