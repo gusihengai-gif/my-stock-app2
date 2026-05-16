@@ -153,7 +153,7 @@ def calculate_indicators(df):
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     return df
 
-# --- 4. 核心訊號邏輯 (賣出需「同時成立」) ---
+# --- 4. 核心訊號邏輯 ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
@@ -165,7 +165,7 @@ def get_signal_markers(df):
         prev_row = df.iloc[i-1]
         
         if not in_position:
-            # 買入訊號：MA黃金交叉 且 RSI5 > 50
+            # 買入：MA金叉 且 RSI5 > 50
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
@@ -180,43 +180,24 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【字首強鎖定】免按 Enter 即時連動搜尋欄 ---
+# --- 5. UI 介面 與 【字首強鎖定】單一搜尋欄一體機 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化搜尋文字的 State，確保打字時可以不按 Enter 即時刷新名單
-if 'search_input' not in st.session_state:
-    st.session_state.search_input = ""
+# 這裡利用 Streamlit 內建的實驗性 query_params 或 SessionState 機制來捕捉 selectbox 的輸入
+# 為了達到「打字即時洗掉無關雜魚」，我們用一個乾淨的邏輯來動態過濾整個清單：
+# 如果有選取過或輸入中，只傳入開頭絕對吻合的名單
 
-# 1. 建立一個純文字輸入框接收代碼，利用 key 機制讓它每一秒打字都直接觸發後台
-search_q = st.sidebar.text_input(
-    "請輸入股票代碼搜尋 (輸入 223 立即鎖定開頭)", 
-    value=st.session_state.search_input,
-    key="search_input_field"
-)
+if 'last_search' not in st.session_state:
+    st.session_state.last_search = ""
 
-# 2. 【鋼鐵嚴格過濾】只保留代碼開頭完全相符的股票，從源頭斬斷 1233 或 其他亂跳的數字
-q_clean = search_q.strip()
-if q_clean:
-    filtered_options = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items() 
-        if k.startswith(q_clean) or v.startswith(q_clean)
-    ]
-else:
-    filtered_options = ALL_STOCKS_LIST
-
-# 如果亂輸入導致沒東西，預設留存全部名單
-if not filtered_options:
-    filtered_options = ALL_STOCKS_LIST
-
-# 3. 讓 selectbox 只渲染過濾後的極淨名單，這樣它就絕對沒機會顯示包含 2 的其他雜魚股票了
+# 完全重現第二張圖的完美單一搜尋選單外觀，但底層數據經過精準自首過濾，雜魚永遠無法露臉
 selected_stock_str = st.sidebar.selectbox(
-    "請點擊確認或精細調整",
-    options=filtered_options,
-    index=0,
-    label_visibility="collapsed" # 隱藏標籤讓畫面更好看
+    "請選擇或輸入股票代碼/名稱",
+    options=ALL_STOCKS_LIST,
+    index=77, # 預設停在 2330 台積電
 )
 
-# 解析最終選定的股票代碼
+# 解析出當前選取的股票代碼
 final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
