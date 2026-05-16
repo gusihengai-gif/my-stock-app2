@@ -185,35 +185,35 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一搜尋欄：純 Python 鋼鐵字首鎖定機制】 ---
+# --- 5. UI 介面 與 【單一搜尋欄：鋼鐵字首對齊機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化後台安全儲存區，確保打字途中圖表穩定
+# 初始化後台記憶狀態
 if "final_target_code" not in st.session_state:
-    st.session_state.final_target_code = "2330"  # 預設台積電
+    st.session_state.final_target_code = "2330" # 預設台積電
 if "input_buffer" not in st.session_state:
     st.session_state.input_buffer = "2330"
 
-# 核心同步監聽：當使用者在輸入框修改內容時
+# 當使用者在文字框改字時（支援免按 Enter 與失去焦點連動機制）
 def on_text_changed():
     val = st.session_state.pure_text_search_widget.strip()
     st.session_state.input_buffer = val
-    # 如果剛好輸入完整 4 碼且存在於台股名單，主動切換大圖表
+    # 如果剛好輸入完整 4 碼且存在於台股名單，自動判定切換
     if val in ALL_STOCKS:
         st.session_state.final_target_code = val
 
-# 唯一的、純淨的文字搜尋輸入框（徹底代替原本會模糊匹配的原生 selectbox）
+# 唯一的、乾淨的單一搜尋欄
 search_query = st.sidebar.text_input(
-    "請輸入股票代碼 (字首強鎖定)：",
+    "請輸入股票代碼 (支援字首強鎖定)：",
     value=st.session_state.input_buffer,
     key="pure_text_search_widget",
     on_change=on_text_changed
 ).strip()
 
-# 隨時保持後台緩衝與輸入內容同步
+# 隨時確保後台的打字緩衝區與當前輸入同步
 st.session_state.input_buffer = search_query
 
-# 鋼鐵字首過濾核心：強迫校正，只准抓出開頭完美的股票
+# 核心鋼鐵字首過濾：只要輸入 223，名單就「只准出現」223 開頭的股票，模糊雜魚通通剔除！
 if search_query:
     matched_stocks = [
         (k, v) for k, v in ALL_STOCKS.items()
@@ -221,19 +221,18 @@ if search_query:
     ]
     
     if matched_stocks:
-        st.sidebar.write("🎯 **符合字首的股票 (請點擊切換)：**")
-        
-        # 轉化為極好點擊的動態直排按鈕，輸入 223 就絕對只有 2231、2233 等按鈕！
-        # 點擊任何一檔，輸入框會同步填滿，大圖表秒速更新切換
-        for k, v in matched_stocks[:10]:  # 限制最多顯示前 10 檔最直覺
-            if st.sidebar.button(f"📊 {k} {v}", key=f"btn_{k}", use_container_width=True):
+        st.sidebar.write("🎯 **請點擊下方符合字首的股票切換：**")
+        # 直接把所有符合字首開頭的股票，做成一個個好看的直排按鈕
+        # 你輸入 223，這裡展開就絕對只有 2231、2233、2236 等，那些 2023、2423 雜魚直接出局！
+        for k, v in matched_stocks[:10]: # 最多顯示前 10 檔避免畫面太長
+            if st.sidebar.button(f"📊 {k} {v}", key=f"btn_{k}"):
                 st.session_state.final_target_code = k
                 st.session_state.input_buffer = k
                 st.rerun()
     else:
         st.sidebar.error("❌ 找不到此字首開頭的股票")
 
-# 最終確定傳送給 yfinance 計算指標的代碼
+# 最終確定要拿去抓取 K 線圖的正確代碼
 final_target_code = st.session_state.final_target_code
 
 if 'view_days' not in st.session_state:
