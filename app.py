@@ -7,6 +7,18 @@ import numpy as np
 # --- 1. 網頁基礎配置 ---
 st.set_page_config(page_title="股票買賣時機", layout="wide")
 
+# 注入 CSS 核心黑魔法：強制關閉 Streamlit 欄位的 autocomplete、自動提示與歷史紀錄彈窗
+st.markdown(
+    """
+    <style>
+    input {
+        autocomplete: off !important;
+    }
+    </style>
+    """, 
+    unsafe_allow_html=True
+)
+
 # --- 2. 鋼鐵級全台股 2000+ 完整名冊 (純淨不分類) ---
 ALL_STOCKS = {
     # 【1100-1400 水泥、食品、塑膠、紡織】
@@ -176,34 +188,36 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 嚴格首碼即時過濾機制 (完全免按 Enter) ---
+# --- 5. UI 介面 與 嚴格首碼即時過濾機制 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化 session_state 記錄當前選定的真實代碼，預設為力積電
 if 'selected_stock_code' not in st.session_state:
     st.session_state.selected_stock_code = "6770"
 
-# 使用文字輸入框，打字當下不需按 Enter，底下程式碼會立刻取得變更
-search_query = st.sidebar.text_input("請輸入股票代碼搜尋 (免按Enter)", value="")
+# 文字輸入框：加入特殊控制元件防範彈窗
+search_query = st.sidebar.text_input(
+    "請輸入股票代碼搜尋 (免按Enter)", 
+    value="",
+    autocomplete="new-password" # 絕招：這能強迫大部分現代瀏覽器放棄跳出歷史輸入選單
+)
 
-# 核心篩選邏輯：強制要求「代碼開頭必須符合」或「名稱開頭符合」，徹底排除 1233 出現在 233 的狀況！
+# 核心篩選重整：【嚴格限制開頭必須完全吻合】
 matched_stocks = []
 if search_query.strip():
     q = search_query.strip()
+    # 嚴格比對：代碼必須是該字串開頭！徹底解決打 2跑出 1101，或打 233跑出 1233的狀況
     matched_stocks = [
         (k, v) for k, v in ALL_STOCKS.items() 
         if k.startswith(q) or v.startswith(q)
     ]
 
-# 如果有符合的股票，直接在輸入框正下方用按鈕排出來，滑鼠點擊一秒連動
+# 若有精準對應的開頭股票，以按鈕呈現
 if matched_stocks:
     st.sidebar.write("🔍 請直接點擊下方結果：")
-    # 限制最多顯示 10 筆，避免畫面拉太長
     for code, name in matched_stocks[:10]:
         if st.sidebar.button(f"📌 {code} {name}", key=f"btn_{code}"):
             st.session_state.selected_stock_code = code
 
-# 最後決定要抓取的股票代碼
 final_target_code = st.session_state.selected_stock_code
 
 if 'view_days' not in st.session_state:
@@ -244,7 +258,6 @@ if final_target_code:
         view_df['日期顯示'] = view_df.index.strftime('%Y-%m-%d')
         view_df['月份'] = view_df.index.strftime('%Y-%m')
 
-        # --- X軸標籤優化邏輯 ---
         tick_vals = []
         tick_texts = []
         days = st.session_state.view_days
@@ -265,7 +278,6 @@ if final_target_code:
 
         fig = go.Figure()
         
-        # 實價連線
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines', name='實價',
@@ -273,7 +285,6 @@ if final_target_code:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 買入點
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['買入點'],
             mode='markers', name='買入',
@@ -281,7 +292,6 @@ if final_target_code:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 賣出點
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
@@ -290,7 +300,6 @@ if final_target_code:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<br><b>滿足條件: %{customdata}</b><extra></extra>"
         ))
         
-        # --- 7. 更新佈局 ---
         fig.update_layout(
             height=600,
             xaxis_rangeslider_visible=False,
