@@ -3,31 +3,55 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import numpy as np
+import urllib.request
+import json
 
 # --- 1. 網頁基礎配置 ---
 st.set_page_config(page_title="股票買賣時機", layout="wide")
 
-# --- 2. 全自動股票名稱查詢函數 (支援所有股票，且不卡死) ---
-@st.cache_data(ttl=86400) # 名字基本上不會變，快取一天，速度極快
+# --- 2. 繁體中文名稱全自動查詢（對照表 + 證交所官方 API 雙防線） ---
+STOCK_NAME_DICT = {
+    "2364": "倫飛", "2454": "聯發科", "2330": "台積電", "2317": "鴻海",
+    "3481": "群創", "2409": "面板", "00919": "群益台灣精選高息",
+    "0056": "元大高股息", "00878": "國泰永續高股息", "00929": "復華台灣科技優息",
+    "0050": "元大台灣50"
+}
+
+@st.cache_data(ttl=86400) # 快取一天，避免重複聯網查詢，執行速度極快
 def get_stock_display_name(symbol):
+    # 提取純數字代碼，例如 "3481.TW" -> "3481"
+    pure_code = symbol.split('.')[0].strip()
+    
+    # 第一道防線：如果核心表裡有，直接秒回傳
+    if pure_code in STOCK_NAME_DICT:
+        return f"{STOCK_NAME_DICT[pure_code]} ({symbol})"
+    
+    # 第二道防線：全自動聯網向台灣證券交易所 API 查詢中文簡稱
     try:
-        # 確保代碼格式，例如輸入 2454 自動補上 .TW
-        target_sym = f"{symbol}.TW" if "." not in symbol else symbol
-        
-        # 使用 yf.Search 搜尋該代碼的精準名稱
-        search = yf.Search(target_sym, max_results=1)
-        if search.quotes:
-            shortname = search.quotes[0].get('shortname', '')
-            longname = search.quotes[0].get('longname', '')
-            # 優先使用短名稱，沒有就用長名稱
-            name = shortname if shortname else longname
-            
-            if name:
-                return f"{name} ({target_sym})"
-        return target_sym
+        # 1. 查詢上市公司名單
+        url_l = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+        req_l = urllib.request.Request(url_l, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req_l) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+            for item in res_data:
+                if item.get('公司代號') == pure_code:
+                    c_name = item.get('公司簡稱', '').strip()
+                    return f"{c_name} ({symbol})"
+                    
+        # 2. 若上市找不到，查詢上櫃公司名單
+        url_o = "https://openapi.twse.com.tw/v1/opendata/t187ap03_O"
+        req_o = urllib.request.Request(url_o, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req_o) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+            for item in res_data:
+                if item.get('公司代號') == pure_code:
+                    c_name = item.get('公司簡稱', '').strip()
+                    return f"{c_name} ({symbol})"
     except Exception:
-        # 萬一 yfinance 查詢失敗，直接回傳代碼，確保程式絕對不崩潰
-        return f"{symbol}.TW" if "." not in symbol else symbol
+        pass
+        
+    # 第三道防線：萬一網路異常，回傳原始代碼，確保程式絕不崩潰
+    return symbol
 
 # --- 3. 技術指標計算 ---
 def calculate_indicators(df):
@@ -59,12 +83,10 @@ def get_signal_markers(df):
         row = df.iloc[i]
         prev_row = df.iloc[i-1]
         
-        # 買入：MA金叉 + RSI強勢
         if not in_position:
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
-        # 賣出：三重共振同時成立
         elif in_position:
             cond_rsi = (row['RSI5'] < row['RSI10'])
             cond_price = (row['Close'] < row['MA5'])
@@ -95,7 +117,6 @@ for i, (lab, val) in enumerate(periods.items()):
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
     data = yf.download(target_sym, period="2y", auto_adjust=False)
-    # 如果找不到，嘗試上櫃市場 (.TWO)
     if data.empty and ".TW" in target_sym:
         target_sym = target_sym.replace(".TW", ".TWO")
         data = yf.download(target_sym, period="2y", auto_adjust=False)
@@ -105,8 +126,8 @@ if symbol_input:
     data, final_symbol = fetch_stock_data(symbol_input)
 
     if not data.empty:
-        # 【全自動更新】從網路動態查詢該股票的中文/英文名稱
-        display_title = get_stock_display_name(symbol_input)
+        # 【功能升級】自動取得完全繁體中文的股票/ETF名稱
+        display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
         if isinstance(data.columns, pd.MultiIndex):
@@ -149,7 +170,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 買入點 (紅色正三角形)
+        # 買入點
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['買入點'],
             mode='markers', name='買入',
@@ -157,7 +178,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 賣出點 (綠色圓點 🟢 + 滿足條件)
+        # 賣出點（🟢 綠色圓點 + 懸浮動態條件）
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
