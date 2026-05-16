@@ -185,126 +185,40 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一原生 行動裝置觸控優化 搜尋欄】 ---
+# --- 5. UI 介面 與 【單一純淨搜尋欄：中英數全支援 + 智慧字首強鎖定】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
+# 用 session_state 記錄最終要查的四碼代碼，確保圖表不漏接
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 將 Python 的台股字典轉換成前端 JSON 格式
-stocks_json = json.dumps(ALL_STOCKS)
+# 唯一的、不限制任何輸入法的原生文字框
+# 當你在手機點擊「勾勾」確認時，輸入的內容會直接送入 search_query 變數中
+search_query = st.sidebar.text_input(
+    "請輸入股票代碼：",
+    placeholder="輸入代碼即時字首過濾...",
+    key="pure_text_search_widget"
+).strip()
 
-# 升級版 HTML：針對行動裝置阻斷 blur 事件並優化觸控焦點
-custom_search_html = f"""
-<div style="font-family: sans-serif; color: #ffffff; padding: 0px; margin: 0px;">
-    <label style="font-size: 14px; font-weight: 500; display: block; margin-bottom: 8px;">請輸入股票代碼：</label>
-    <div style="position: relative; width: 100%;">
-        <input type="text" id="stockSearchInput" placeholder="🔍 輸入代碼即時字首過濾..." autocomplete="off" inputmode="numeric"
-            style="width: 100%; padding: 12px; background-color: #1A1C24; color: #ffffff; 
-                   border: 1px solid #4A4A4A; border-radius: 8px; font-size: 16px; outline: none; box-sizing: border-box;">
-        <div id="dropdownList" 
-            style="position: absolute; top: 48px; left: 0; width: 100%; max-height: 250px; overflow-y: auto; 
-                   background-color: #1A1C24; border: 1px solid #4A4A4A; border-radius: 8px; 
-                   box-shadow: 0px 8px 16px rgba(0,0,0,0.5); z-index: 99999; display: none; box-sizing: border-box;">
-        </div>
-    </div>
-</div>
+# 【核心：智慧解析打完字按確認後的切換邏輯】
+if search_query:
+    # 情況 A：如果使用者直接輸入 4 位數完整代碼 (例如 "2330")
+    if search_query in ALL_STOCKS:
+        st.session_state.final_target_code = search_query
+    else:
+        # 情況 B：使用者輸入的是中文 (例如 "台積電"、"聯發科")
+        matched_by_name = [k for k, v in ALL_STOCKS.items() if search_query in v]
+        if matched_by_name:
+            st.session_state.final_target_code = matched_by_name[0]
+        else:
+            # 情況 C：使用者輸入的是字首/部分代碼 (例如 "2"、"22"、"223")
+            # 鋼鐵字首鎖定：強迫只比對代碼的「開頭」，徹底過濾模糊雜魚！
+            matched_by_prefix = [k for k in ALL_STOCKS.keys() if k.startswith(search_query)]
+            if matched_by_prefix:
+                # 預進位到最符合該字首的第一檔股票，讓圖表自動切換，不卡在預設股票
+                st.session_state.final_target_code = matched_by_prefix[0]
 
-<script>
-    const stocksData = {stocks_json};
-    const inputField = document.getElementById('stockSearchInput');
-    const dropdown = document.getElementById('dropdownList');
-
-    // 即時字首過濾核心
-    inputField.addEventListener('input', function() {{
-        const query = this.value.trim();
-        dropdown.innerHTML = '';
-        
-        if (!query) {{
-            dropdown.style.display = 'none';
-            return;
-        }}
-
-        let hasMatches = false;
-        
-        for (const [code, name] of Object.entries(stocksData)) {{
-            if (code.startsWith(query)) {{
-                hasMatches = true;
-                const item = document.createElement('div');
-                item.style.padding = '12px 14px';
-                item.style.cursor = 'pointer';
-                item.style.fontSize = '15px';
-                item.style.borderBottom = '1px solid #2D313E';
-                item.style.color = '#E0E0E0';
-                item.style.webkitTapHighlightColor = 'transparent'; // 移除手機網頁點擊時的藍色陰影
-                item.innerText = code + ' ' + name;
-
-                // 關鍵優化：使用 mousedown 代替 click，搶在手機虛擬鍵盤收起（blur）之前攔截觸控事件
-                item.addEventListener('mousedown', function(e) {{
-                    e.preventDefault(); // 阻止輸入框失去焦點導致下拉選單消失
-                    selectStock(code);
-                }});
-                
-                // 備用觸控支援
-                item.addEventListener('touchstart', function(e) {{
-                    e.preventDefault();
-                    selectStock(code);
-                }});
-
-                dropdown.appendChild(item);
-            }}
-        }}
-
-        if (hasMatches) {{
-            dropdown.style.display = 'block';
-        }} else {{
-            dropdown.style.display = 'none';
-        }}
-    }});
-
-    function selectStock(code) {{
-        inputField.value = code;
-        dropdown.style.display = 'none';
-        inputField.blur(); // 收起手機鍵盤
-        
-        // 傳送通知給 Streamlit 後台
-        const token = Math.random().toString(36);
-        window.parent.postMessage({{
-            type: 'streamlit:set_widget_value',
-            key: 'js_selected_stock',
-            value: code + '|' + token
-        }}, '*');
-    }}
-
-    // 當輸入框聚焦時，如果裡面有字，重新展開選單
-    inputField.addEventListener('focus', function() {{
-        if (this.value.trim()) {{
-            this.dispatchEvent(new Event('input'));
-        }}
-    }});
-
-    // 點擊外面收起
-    document.addEventListener('mousedown', function(e) {{
-        if (!inputField.contains(e.target) && !dropdown.contains(e.target)) {{
-            dropdown.style.display = 'none';
-        }}
-    }});
-</script>
-"""
-
-with st.sidebar:
-    # 稍微放大高度給手機版的下拉清單留出足夠空間
-    components.html(custom_search_html, height=330, scrolling=False)
-
-# 在 Python 後台接收確定代碼
-if "js_selected_stock" in st.session_state and st.session_state.js_selected_stock:
-    raw_val = st.session_state.js_selected_stock
-    if "|" in raw_val:
-        selected_code = raw_val.split("|")[0]
-        if selected_code != st.session_state.final_target_code:
-            st.session_state.final_target_code = selected_code
-            st.rerun()
-
+# 真正拿去撈資料的代碼
 final_target_code = st.session_state.final_target_code
 
 if 'view_days' not in st.session_state:
