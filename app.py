@@ -184,65 +184,38 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【動態免按 Enter 數字過濾面板】 ---
+# --- 5. UI 介面 與 【單一極簡搜尋欄：純 Python 字首鎖定機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用 session_state 記憶目前點選的字首與最終選擇的代碼
-if "search_prefix" not in st.session_state:
-    st.session_state.search_prefix = ""
+# 用 session_state 記憶最終確定的股票代碼（預設台積電）
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 顯示目前已輸入的字首狀態
-st.sidebar.markdown(f"### 🔍 當前鎖定字首： ` {st.session_state.search_prefix if st.session_state.search_prefix else '未指定'} `")
+# 唯一的、純淨的文字搜尋欄
+search_query = st.sidebar.text_input(
+    "請輸入股票代碼：",
+    value=st.session_state.final_target_code,
+    key="pure_text_search_widget"
+).strip()
 
-# 打造極速點選鍵盤（點擊立即觸發，完全免按 Enter）
-num_cols = st.sidebar.columns(4)
-for idx, num in enumerate(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]):
-    col_layout = num_cols[idx % 4]
-    if col_layout.button(num, key=f"pad_{num}", use_container_width=True):
-        st.session_state.search_prefix += num
-        st.rerun()
-
-# 清除與退格按鈕
-control_cols = st.sidebar.columns(2)
-if control_cols[0].button("⬅️ 退格", use_container_width=True):
-    st.session_state.search_prefix = st.session_state.search_prefix[:-1]
-    st.rerun()
-if control_cols[1].button("🗑️ 清空", use_container_width=True):
-    st.session_state.search_prefix = ""
-    st.rerun()
-
-current_query = st.session_state.search_prefix
-
-# 鋼鐵過濾機制：只撈出完全由該數字開頭的股票
-if current_query:
-    matched_stocks = [
-        (k, v) for k, v in ALL_STOCKS.items()
-        if k.startswith(current_query)
-    ]
-    
-    if matched_stocks:
-        st.sidebar.write("🎯 **符合字首名單 (點擊即切換圖表)：**")
-        # 這裡展示的名單絕對嚴格鎖定開頭！你點到 223，展開就只有 2231、2233，模糊雜魚完全出局！
-        for k, v in matched_stocks[:15]: # 最多顯示 15 檔
-            # 做出好看流暢的點擊切換按鈕
-            if st.sidebar.button(f"📊 {k} {v}", key=f"btn_{k}", use_container_width=True):
-                st.session_state.final_target_code = k
-                st.rerun()
+# 鋼鐵字首判定核心
+if search_query:
+    # 檢查輸入的內容是否存在於台股代碼中，且必須是完整的代碼
+    if search_query in ALL_STOCKS:
+        st.session_state.final_target_code = search_query
     else:
-        st.sidebar.error("❌ 找不到此字首開頭的股票")
-else:
-    # 沒輸入任何字首時，預設顯示幾檔熱門權值股方便點選
-    st.sidebar.write("🔥 **熱門股票快捷切換：**")
-    default_shortcuts = ["2330", "2317", "2454", "0050"]
-    for code in default_shortcuts:
-        if code in ALL_STOCKS:
-            if st.sidebar.button(f"📊 {code} {ALL_STOCKS[code]}", key=f"default_{code}", use_container_width=True):
-                st.session_state.final_target_code = code
-                st.rerun()
+        # 模糊匹配封殺機制：嘗試找出「以此開頭」的代碼
+        matched_keys = [k for k in ALL_STOCKS.keys() if k.startswith(search_query)]
+        
+        # 如果剛好只找到一檔，或者輸入部分長度時直接精準鎖定
+        if len(matched_keys) == 1:
+            st.session_state.final_target_code = matched_keys[0]
+        elif len(matched_keys) > 1 and search_query in matched_keys:
+            st.session_state.final_target_code = search_query
+        else:
+            # 當你還在打字途中（如只打了 2、21、233 尚未完成時），保持在大畫面不跳轉，絕不崩潰
+            pass
 
-# 取得最終要呈現的代碼
 final_target_code = st.session_state.final_target_code
 
 if 'view_days' not in st.session_state:
