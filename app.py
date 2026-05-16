@@ -56,7 +56,7 @@ ALL_STOCKS = {
     "2364": "倫飛", "2365": "昆盈", "2367": "燿華", "2368": "金像電", "2369": "菱生", "2371": "大同", "2373": "震旦行",
     "2374": "佳能", "2375": "凱美", "2376": "技嘉", "2377": "微星", "2379": "瑞昱", "2380": "虹光", "2382": "廣達",
     "2383": "台光電", "2385": "群光", "2387": "精元", "2388": "威盛", "2390": "雲辰", "2392": "正崴", "2393": "億光",
-    "2395": "研華", "2397": "友通", "2399": "映泰", "2401": "凌陽", "2402": "毅嘉", "2404": "漢唐", "2406": "國碩",
+    "2395": "研華", "2397": "友通", "2399": "映泰", "2401": "聯陽", "2402": "毅嘉", "2404": "漢唐", "2406": "國碩",
     "2408": "南亞科", "2409": "面板", "2412": "中華電", "2413": "環科", "2414": "精技", "2415": "錩新", "2417": "圓剛",
     "2419": "仲琦", "2420": "新巨", "2421": "建準", "2423": "固緯", "2424": "隴華", "2425": "承啟", "2426": "鼎元",
     "2427": "三商電", "2428": "興勤", "2430": "燦坤", "2431": "聯昌", "2433": "互盛電", "2436": "偉詮電", "2439": "美律",
@@ -125,9 +125,6 @@ ALL_STOCKS = {
     "00943": "兆豐電子高息等權重", "00944": "野村趨勢動能高股息", "00946": "群益科技高股息成長"
 }
 
-# 建立供下拉選單顯示的工整清單（純淨不分組）
-SELECTBOX_OPTIONS = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
-
 def get_stock_display_name(symbol):
     pure_code = symbol.split('.')[0].strip()
     if pure_code in ALL_STOCKS:
@@ -179,18 +176,35 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 即時打字聯想選單 (完全免按 Enter) ---
+# --- 5. UI 介面 與 嚴格首碼即時過濾機制 (完全免按 Enter) ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 使用 st.selectbox，點擊後只要輸入「1」，下方立刻跳出所有開頭為 1 的選項供挑選
-selected_option = st.sidebar.selectbox(
-    "請選擇或輸入股票代碼/名稱",
-    options=SELECTBOX_OPTIONS,
-    index=SELECTBOX_OPTIONS.index("6770 力積電") if "6770 力積電" in SELECTBOX_OPTIONS else 0
-)
+# 初始化 session_state 記錄當前選定的真實代碼，預設為力積電
+if 'selected_stock_code' not in st.session_state:
+    st.session_state.selected_stock_code = "6770"
 
-# 拆分選單字串拿到純代碼
-symbol_input = selected_option.split(" ")[0].strip()
+# 使用文字輸入框，打字當下不需按 Enter，底下程式碼會立刻取得變更
+search_query = st.sidebar.text_input("請輸入股票代碼搜尋 (免按Enter)", value="")
+
+# 核心篩選邏輯：強制要求「代碼開頭必須符合」或「名稱開頭符合」，徹底排除 1233 出現在 233 的狀況！
+matched_stocks = []
+if search_query.strip():
+    q = search_query.strip()
+    matched_stocks = [
+        (k, v) for k, v in ALL_STOCKS.items() 
+        if k.startswith(q) or v.startswith(q)
+    ]
+
+# 如果有符合的股票，直接在輸入框正下方用按鈕排出來，滑鼠點擊一秒連動
+if matched_stocks:
+    st.sidebar.write("🔍 請直接點擊下方結果：")
+    # 限制最多顯示 10 筆，避免畫面拉太長
+    for code, name in matched_stocks[:10]:
+        if st.sidebar.button(f"📌 {code} {name}", key=f"btn_{code}"):
+            st.session_state.selected_stock_code = code
+
+# 最後決定要抓取的股票代碼
+final_target_code = st.session_state.selected_stock_code
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -212,8 +226,8 @@ def fetch_stock_data(symbol):
         data = yf.download(target_sym, period="2y", auto_adjust=False)
     return data, target_sym
 
-if symbol_input:
-    data, final_symbol = fetch_stock_data(symbol_input)
+if final_target_code:
+    data, final_symbol = fetch_stock_data(final_target_code)
 
     if not data.empty:
         display_title = get_stock_display_name(final_symbol)
