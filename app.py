@@ -128,7 +128,6 @@ ALL_STOCKS = {
 import streamlit as pd
 from streamlit_searchbox import st_searchbox
 import streamlit.components.v1 as components
-import streamlit.components.v1 as components
 
 # 格式化選單名稱
 ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
