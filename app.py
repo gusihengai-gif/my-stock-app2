@@ -14,7 +14,7 @@ ALL_STOCKS = {
     "1519": "華城", "1590": "亞德客-KY", "1605": "華新", "1722": "台肥", "2002": "中鋼",
     "2023": "志聯", "2101": "泰豐", "2102": "泰豐二", "2105": "正新", "2201": "裕隆",
     "2204": "中華", "2206": "三陽工業", "2231": "為升", "2233": "宇隆", "2236": "百達-KY",
-    "2239": "英利-KY", "2301": "光寶科", "2303": "聯电", "2308": "台達電", "2317": "鴻海",
+    "2239": "英利-KY", "2301": "光寶科", "2303": "聯電", "2308": "台達電", "2317": "鴻海",
     "2324": "仁寶", "2327": "國巨", "2330": "台積電", "2344": "華邦電", "2345": "智邦",
     "2352": "佳世達", "2353": "宏碁", "2356": "英業達", "2357": "華碩", "2360": "致茂",
     "2371": "大同", "2376": "技嘉", "2377": "微星", "2379": "瑞昱", "2382": "廣達",
@@ -31,9 +31,6 @@ ALL_STOCKS = {
     "9904": "寶成", "9910": "豐泰", "9921": "巨大", "9945": "潤泰新",
     "0050": "元大台灣50", "0056": "元大高股息", "00878": "國泰永續高股息", "00919": "群益台灣精選高息"
 }
-
-# 格式化基礎名單
-ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
 
 def get_stock_display_name(symbol):
     pure_code = symbol.split('.')[0].strip()
@@ -86,36 +83,37 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 4. UI 側邊欄：【免按 Enter 鋼鐵字首即時選單機制】 ---
+# --- 4. UI 側邊欄：【唯一純淨搜尋欄 ＆ 免按 Enter 自動觸發機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 運用文字輸入框當作「極速免 Enter 字首過濾器」
-prefix_query = st.sidebar.text_input("🔍 打字即刻過濾字首 (免按 Enter)：", value="").strip()
+# 使用 session_state 在後台牢牢記憶當前鎖定的最終代碼（預設台積電）
+if "current_confirmed_code" not in st.session_state:
+    st.session_state.current_confirmed_code = "2330"
 
-# 鋼鐵字首篩選過濾：完全防堵非字首開頭的模糊雜魚
-if prefix_query:
-    current_options = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items()
-        if k.startswith(prefix_query)
-    ]
-    if not current_options:
-        st.sidebar.error("❌ 找不到此字首開頭的股票")
-        current_options = ALL_STOCKS_LIST
-else:
-    current_options = ALL_STOCKS_LIST
+# 畫面上唯一的、乾乾淨淨的輸入框
+user_input = st.sidebar.text_input("輸入股票代碼：", value=st.session_state.current_confirmed_code, key="pure_single_search_bar").strip()
 
-# 美觀流暢的標準下拉選單：外觀 100% 完美對齊你想要的樣式
-# 它會隨著上面的輸入框動態重組，完全不卡頓、不噴 No results 錯誤
-selected_stock_str = st.sidebar.selectbox(
-    "請選擇股票：",
-    options=current_options,
-    index=0,
-    key="real_pure_selectbox_widget"
-)
+# 【免按 Enter 動態追蹤心臟】
+if user_input:
+    # 情況 A：如果輸入的內容正好完美對齊清單中的某檔股票（例如輸入 2231 或 0050）
+    if user_input in ALL_STOCKS:
+        if user_input != st.session_state.current_confirmed_code:
+            st.session_state.current_confirmed_code = user_input
+            st.rerun()
+    else:
+        # 情況 B：進行字首模糊強鎖定
+        matched_keys = [k for k in ALL_STOCKS.keys() if k.startswith(user_input)]
+        
+        # 如果打字打到一半，剛好篩到只剩下一檔股票，就自動幫你切換（免按 Enter）
+        if len(matched_keys) == 1:
+            if st.session_state.current_confirmed_code != matched_keys[0]:
+                st.session_state.current_confirmed_code = matched_keys[0]
+                st.rerun()
+        # 如果輸入的是打到一半的字首（例如 1、11、22），不做任何跳轉，保持當前畫面，絕不噴錯！
+        else:
+            pass
 
-# 提煉出最終股票代碼
-final_target_code = selected_stock_str.split(" ")[0] if selected_stock_str else "2330"
-
+final_target_code = st.session_state.current_confirmed_code
 
 # --- 5. 主頁面：觀測天數週期切換面板 ---
 if 'view_days' not in st.session_state:
