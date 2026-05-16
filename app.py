@@ -185,84 +185,53 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【真正免按 Enter】字首鎖定單一搜尋欄 ---
+# --- 5. UI 介面 與 【字首強鎖定、免按Enter】單一輸入選單 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 使用原生的 text_input 做為唯一的搜尋欄外觀
-search_input_val = st.sidebar.text_input(
-    "輸入股票代碼",
-    value="2330",
-    key="stock_search_input_field"
-).strip()
+# 初始化 session state 狀態儲存空間
+if "final_target_code" not in st.session_state:
+    st.session_state.final_target_code = "2330"  # 預設台積電
+if "typed_input_buffer" not in st.session_state:
+    st.session_state.typed_input_buffer = "2330"
 
-# 生成符合 HTML 標準的 datalist 標籤，把台股名單餵進去
-datalist_options_html = "".join([f'<option value="{item}">' for item in ALL_STOCKS_LIST])
-
-# 利用前端 JavaScript 動態攔截輸入框（已修正 Python f-string 雙大括號逸失問題）
-js_injector = f"""
-<script>
-    function patchStreamlitInput() {{
-        var inputs = window.parent.document.querySelectorAll('input[type="text"]');
-        inputs.forEach(function(input) {{
-            if (!input.hasAttribute('list')) {{
-                // 1. 綁定強鎖定的數據選單
-                input.setAttribute('list', 'stocks_prefix_datalist');
-                input.setAttribute('autocomplete', 'off');
-                
-                // 2. 監聽打字與點選事件 (免按 Enter 核心)
-                input.addEventListener('input', function(e) {{
-                    var currentVal = e.target.value.trim();
-                    var datalist = window.parent.document.getElementById('stocks_prefix_datalist');
-                    var options = datalist.querySelectorAll('option');
-                    
-                    // 鋼鐵限制：動態過濾下拉選單內容，只允許「字首完全符合」的項目顯示
-                    options.forEach(function(opt) {{
-                        var optVal = opt.value;
-                        if (optVal.startsWith(currentVal)) {{
-                            opt.disabled = false;
-                        }} else {{
-                            opt.disabled = true;
-                        }}
-                    }});
-                    
-                    // 如果輸入的值剛好完美對應名單中的某個項目，或者打滿了4位代碼且存在於選單，直接觸發變更
-                    options.forEach(function(opt) {{
-                        if (opt.value === currentVal || opt.value.split(' ')[0] === currentVal) {{
-                            if (opt.value === currentVal) {{
-                                e.target.value = opt.value.split(' ')[0];
-                            }}
-                            var event = new KeyboardEvent('keydown', {{
-                                bubbles: true, cancelable: true, key: 'Enter', keyCode: 13
-                            }});
-                            e.target.dispatchEvent(event);
-                        }}
-                    }});
-                }});
-            }}
-        }});
-    }}
+# 當使用者只要在框框裡一改字，會自動觸發這個函數進行黑科技過濾
+def handle_input_change():
+    raw_val = st.session_state.live_search_box_widget.strip()
+    st.session_state.typed_input_buffer = raw_val
     
-    if (window.parent.document.readyState === 'complete') {{
-        patchStreamlitInput();
-    }}
-    setInterval(patchStreamlitInput, 500);
-</script>
+    # 鋼鐵核心過濾：只篩選代碼是這個數字開頭的股票
+    if raw_val:
+        matched = [k for k in ALL_STOCKS.keys() if k.startswith(raw_val)]
+        # 如果使用者剛好打完4位完整代碼，立刻選定
+        if raw_val in ALL_STOCKS:
+            st.session_state.final_target_code = raw_val
+        # 如果輸入的是局部開頭（例如 1, 12, 223），自動秒速切換到符合條件的第一檔股票，讓圖表動態變
+        elif matched:
+            st.session_state.final_target_code = matched[0]
+    st.rerun()  # 強制 Streamlit 重新渲染大畫面，達成免按 Enter 的流暢感
 
-<datalist id="stocks_prefix_datalist">
-    {datalist_options_html}
-</datalist>
-"""
-# 將控制腳本靜默注入到頁面中
-components.html(js_injector, height=0, width=0)
+# 唯一一根純淨的搜尋選單欄
+user_text_typed = st.sidebar.text_input(
+    "請輸入股票代碼 (例: 1, 12, 223)",
+    value=st.session_state.typed_input_buffer,
+    key="live_search_box_widget",
+    on_change=handle_input_change
+)
 
-# 解析並防呆最終要繪製的股票代碼
-final_target_code = search_input_val.split(" ")[0]
-if not final_target_code or final_target_code not in ALL_STOCKS:
-    if 'last_valid_stock' not in st.session_state:
-        st.session_state.last_valid_stock = "2330"
-    final_target_code = st.session_state.last_valid_stock
-else:
-    st.session_state.last_valid_stock = final_target_code
+# 在搜尋欄正下方提供直覺的字首提示，完全封殺 2323 這種模糊雜魚
+current_keyword = st.session_state.typed_input_buffer
+if current_keyword:
+    prefix_matches = [f"{k} {v}" for k, v in ALL_STOCKS.items() if k.startswith(current_keyword)]
+    if prefix_matches:
+        st.sidebar.caption(f"🎯 符合 {current_keyword} 字首的股票名單：")
+        # 僅優雅展示前 8 檔，不佔用側邊欄過多空間
+        for matched_item in prefix_matches[:8]:
+            st.sidebar.markdown(f"`{matched_item}`")
+    else:
+        st.sidebar.error("❌ 找不到此字首開頭的股票")
+
+# 獲取最終要呈現的代碼
+final_target_code = st.session_state.final_target_code
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
