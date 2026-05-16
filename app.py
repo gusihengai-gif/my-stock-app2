@@ -185,53 +185,88 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【字首強鎖定、免按Enter】單一輸入選單 ---
+# --- 5. UI 介面 與 【單一搜尋欄：字首強鎖定機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化 session state 狀態儲存空間
-if "final_target_code" not in st.session_state:
-    st.session_state.final_target_code = "2330"  # 預設台積電
-if "typed_input_buffer" not in st.session_state:
-    st.session_state.typed_input_buffer = "2330"
+# 初始化後台狀態
+if "current_select_box_value" not in st.session_state:
+    st.session_state.current_select_box_value = "2330 台積電"
+if "previous_search_query" not in st.session_state:
+    st.session_state.previous_search_query = ""
 
-# 當使用者只要在框框裡一改字，會自動觸發這個函數進行黑科技過濾
-def handle_input_change():
-    raw_val = st.session_state.live_search_box_widget.strip()
-    st.session_state.typed_input_buffer = raw_val
-    
-    # 鋼鐵核心過濾：只篩選代碼是這個數字開頭的股票
-    if raw_val:
-        matched = [k for k in ALL_STOCKS.keys() if k.startswith(raw_val)]
-        # 如果使用者剛好打完4位完整代碼，立刻選定
-        if raw_val in ALL_STOCKS:
-            st.session_state.final_target_code = raw_val
-        # 如果輸入的是局部開頭（例如 1, 12, 223），自動秒速切換到符合條件的第一檔股票，讓圖表動態變
-        elif matched:
-            st.session_state.final_target_code = matched[0]
-    st.rerun()  # 強制 Streamlit 重新渲染大畫面，達成免按 Enter 的流暢感
+# 獲取目前使用者在元件內實際輸入的局部文字
+ctx = st.runtime.scriptrunner.script_run_context.get_script_run_context()
+query_text = ""
+if ctx:
+    # 透過 Streamlit 前端狀態機，直接秘密拦截使用者「剛打進去但還沒按 Enter」的局部數字
+    query_param = st.query_params.get("sidebar_search_buffer", "")
+    query_text = query_param if isinstance(query_param, str) else "".join(query_param)
+    query_text = query_text.strip()
 
-# 唯一一根純淨的搜尋選單欄
-user_text_typed = st.sidebar.text_input(
-    "請輸入股票代碼 (例: 1, 12, 223)",
-    value=st.session_state.typed_input_buffer,
-    key="live_search_box_widget",
-    on_change=handle_input_change
+# 如果有打字，啟動鋼鐵過濾：只允許開頭完全符合的股票留在選單裡！
+if query_text:
+    filtered_options = [item for item in ALL_STOCKS_LIST if item.startswith(query_text)]
+    if not filtered_options:
+        filtered_options = [st.session_state.current_select_box_value]
+else:
+    filtered_options = ALL_STOCKS_LIST
+
+# 當使用者真正點選了某檔股票時的連動觸發
+def on_select_change():
+    # 清空秘密拦截緩衝區，以便下一次乾淨搜尋
+    st.query_params.clear()
+
+# 唯一的、純淨的原生搜尋下拉框
+selected_stock_str = st.sidebar.selectbox(
+    "請選擇或輸入股票代碼/名稱",
+    options=filtered_options,
+    index=0 if st.session_state.current_select_box_value not in filtered_options else filtered_options.index(st.session_state.current_select_box_value),
+    key="main_pure_selectbox_widget",
+    on_change=on_select_change
 )
 
-# 在搜尋欄正下方提供直覺的字首提示，完全封殺 2323 這種模糊雜魚
-current_keyword = st.session_state.typed_input_buffer
-if current_keyword:
-    prefix_matches = [f"{k} {v}" for k, v in ALL_STOCKS.items() if k.startswith(current_keyword)]
-    if prefix_matches:
-        st.sidebar.caption(f"🎯 符合 {current_keyword} 字首的股票名單：")
-        # 僅優雅展示前 8 檔，不佔用側邊欄過多空間
-        for matched_item in prefix_matches[:8]:
-            st.sidebar.markdown(f"`{matched_item}`")
-    else:
-        st.sidebar.error("❌ 找不到此字首開頭的股票")
+# 鎖定狀態
+st.session_state.current_select_box_value = selected_stock_str
 
-# 獲取最終要呈現的代碼
-final_target_code = st.session_state.final_target_code
+# 注入一段完全無害、不干涉 Streamlit 後台、只負責即時把打字同步給 Python 的前端輕量腳本
+js_search_monitor = """
+<script>
+    function hookStreamlitSearch() {
+        var doc = window.parent.document;
+        // 抓取 Streamlit selectbox 的輸入框
+        var inputs = doc.querySelectorAll('input[role="combobox"]');
+        inputs.forEach(function(input) {
+            if (!input.hasAttribute('data-prefix-hooked')) {
+                input.setAttribute('data-prefix-hooked', 'true');
+                
+                // 監聽打字事件
+                input.addEventListener('input', function(e) {
+                    var text_val = e.target.value.trim();
+                    // 將當前打字進度即時寫入 URL 參數，通知 Python 後台清洗名單
+                    var url = new URL(window.parent.location.href);
+                    if (text_val) {
+                        url.searchParams.set('sidebar_search_buffer', text_val);
+                    } else {
+                        url.searchParams.delete('sidebar_search_buffer');
+                    }
+                    window.parent.history.replaceState({}, '', url.toString());
+                    
+                    // 點擊空白處或觸發一個微小的重新整理，讓 Python 立即收到過濾指令（免按 Enter）
+                    setTimeout(function() {
+                        var submitBtn = doc.querySelector('button[kind="secondaryFormSubmit"]');
+                        if(submitBtn) { submitBtn.click(); }
+                    }, 10);
+                });
+            }
+        });
+    }
+    setInterval(hookStreamlitSearch, 400);
+</script>
+"""
+components.html(js_search_monitor, height=0, width=0)
+
+# 解析並提取最終代碼繪製 K 線圖
+final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
