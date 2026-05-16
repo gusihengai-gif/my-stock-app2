@@ -165,6 +165,7 @@ def get_signal_markers(df):
         prev_row = df.iloc[i-1]
         
         if not in_position:
+            # 買入訊號：MA黃金交叉 且 RSI5 > 50
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
@@ -179,35 +180,19 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 徹底封鎖 1233 的「前端過濾下拉選單」 ---
+# --- 5. UI 介面 與 【打字免按 Enter】即時連動一體化搜尋欄 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用來即時在前端精準攔截開頭數字的秘密武器
-filter_input = st.sidebar.text_input("請輸入股票代碼搜尋 (免按Enter，支援模糊打字)")
-
-# 關鍵點：用動態清單把關！【嚴格限制開頭】
-# 只要打 233，清單內就「只會剩下開頭是 233」的股票，1233 在後台直接被拔掉不給過
-if filter_input.strip():
-    q = filter_input.strip()
-    filtered_options = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items() 
-        if k.startswith(q) or v.startswith(q)
-    ]
-else:
-    filtered_options = ALL_STOCKS_LIST
-
-# 如果過濾後的名單是空的（例如亂打字），就保持完整名單避免出錯
-if not filtered_options:
-    filtered_options = ALL_STOCKS_LIST
-
-# 下拉選單：它只會渲染過濾乾淨的名單，而且內建打字秒對應，黑框歷史彈窗徹底失效！
+# 用全新升級的 selectbox 作為搜尋框：自帶打字過濾功能，且打字免按 Enter 畫面直接聯動！
+# 並且徹底封鎖歷史輸入黑框，不分類別純淨顯示
 selected_stock_str = st.sidebar.selectbox(
-    "請選擇股票",
-    options=filtered_options,
-    index=0
+    "請輸入或選擇股票代碼/名稱 (支援免按 Enter 即時連動)",
+    options=ALL_STOCKS_LIST,
+    index=77, # 預設停在台積電 (2330)，你可以自由更改預設 index
+    help="直接在框內輸入數字（如 233），即可自動過濾首碼完全符合的股票名單！"
 )
 
-# 解析出最終要查詢的股票代碼
+# 直接解析出使用者打字選定的股票代碼，瞬間傳遞給後端 K 線圖
 final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
@@ -220,7 +205,7 @@ for i, (lab, val) in enumerate(periods.items()):
     if p_cols[i].button(lab):
         st.session_state.view_days = val
 
-# --- 6. 資料抓取 ---
+# --- 6. 資料抓取 與 圖表渲染 ---
 @st.cache_data(ttl=3600)
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
@@ -268,6 +253,7 @@ if final_target_code:
 
         fig = go.Figure()
         
+        # 繪製實價曲線
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines', name='實價',
