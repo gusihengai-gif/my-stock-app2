@@ -183,36 +183,41 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【字首強鎖定】專用搜尋組件 ---
+# --- 5. UI 介面 與 【字首強鎖定】原生免按 Enter 輸入欄 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 核心篩選函數：當使用者在前端搜尋框打字時，這個函數會被即時觸發
-# 它會完全覆蓋並取代元件內建的模糊搜尋，強迫實施「字首對齊」！
-def stock_prefix_search_cb(search_term: str):
-    if not search_term:
-        return ALL_STOCKS_LIST[:100]  # 未輸入時，預設展示前100檔股票
-    
-    clean_term = search_term.strip()
-    # 鋼鐵字首過濾邏輯：只有股票代碼是該數字開頭的，才允許放入下拉選單！
-    filtered = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items()
-        if k.startswith(clean_term)
-    ]
-    return filtered if filtered else ["找不到符合的股票"]
+# 用來確保使用者邊打字、畫面邊聯動變更的 Session State
+if "typing_search_keyword" not in st.session_state:
+    st.session_state.typing_search_keyword = "2330"
 
-# 使用 searchbox 組件，外觀上完全是一體化的完美搜尋選單
-selected_stock_str = st_searchbox(
-    search_function=stock_prefix_search_cb,
-    placeholder="請輸入股票代碼 (例: 66)",
-    default="2330 台積電",
-    key="stock_searchbox_unique"
-)
+# 原生無額外套件輸入框，外觀完全單一化
+user_typed_val = st.sidebar.text_input(
+    "請輸入股票代碼 (打字即自動過濾字首連動)",
+    value=st.session_state.typing_search_keyword,
+    key="raw_text_input_search_widget"
+).strip()
 
-# 防止未選取或無匹配時崩潰，預設給予台積電
-if not selected_stock_str or selected_stock_str == "找不到符合的股票":
-    final_target_code = "2330"
+# 【鋼鐵核心過濾邏輯】強制實施字首對齊，只要不是打的數字開頭，一律從名單抹除！
+filtered_stocks = [
+    f"{k} {v}" for k, v in ALL_STOCKS.items() 
+    if k.startswith(user_typed_val) or v.startswith(user_typed_val)
+]
+
+# 決定最後要畫圖的股票代碼
+if user_typed_val in ALL_STOCKS:
+    final_target_code = user_typed_val
+elif filtered_stocks:
+    # 只要一打字（例如 66），右邊大畫面「不需要按 Enter」就會直接鎖定過濾後的第一檔（例如 6669），達成即時切換！
+    final_target_code = filtered_stocks[0].split(" ")[0]
 else:
-    final_target_code = selected_stock_str.split(" ")[0]
+    final_target_code = "2330"
+
+# 貼心提示：在輸入框正下方「純淨顯示」目前開頭符合的股票名單，拒絕任何模糊型雜魚跑出來
+if user_typed_val and filtered_stocks:
+    st.sidebar.caption("🎯 目前符合首碼的名單：")
+    # 只顯示前 8 檔最精準的項目，畫面乾淨不雜亂
+    for s in filtered_stocks[:8]:
+        st.sidebar.text(f"• {s}")
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -241,7 +246,8 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        if isinstance(data.columns, pd.MultiIndex):
+        # 修正 pd 被覆蓋的問題，改用安全的方式判斷多層欄位
+        if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
         
