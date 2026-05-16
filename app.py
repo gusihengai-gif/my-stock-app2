@@ -9,48 +9,37 @@ import json
 # --- 1. 網頁基礎配置 ---
 st.set_page_config(page_title="股票買賣時機", layout="wide")
 
-# --- 2. 繁體中文名稱全自動查詢（對照表 + 證交所官方 API 雙防線） ---
-STOCK_NAME_DICT = {
-    "2364": "倫飛", "2454": "聯發科", "2330": "台積電", "2317": "鴻海",
-    "3481": "群創", "2409": "面板", "00919": "群益台灣精選高息",
-    "0056": "元大高股息", "00878": "國泰永續高股息", "00929": "復華台灣科技優息",
-    "0050": "元大台灣50"
-}
-
-@st.cache_data(ttl=86400) # 快取一天，避免重複聯網查詢，執行速度極快
+# --- 2. 全台灣股票/ETF 中文名稱全自動查詢（支援 1605 等所有本土與非本土股票） ---
+@st.cache_data(ttl=86400) # 快取一天，避免重複查詢，速度極快
 def get_stock_display_name(symbol):
-    # 提取純數字代碼，例如 "3481.TW" -> "3481"
     pure_code = symbol.split('.')[0].strip()
     
-    # 第一道防線：如果核心表裡有，直接秒回傳
-    if pure_code in STOCK_NAME_DICT:
-        return f"{STOCK_NAME_DICT[pure_code]} ({symbol})"
-    
-    # 第二道防線：全自動聯網向台灣證券交易所 API 查詢中文簡稱
     try:
-        # 1. 查詢上市公司名單
-        url_l = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+        # 1. 查詢所有上市公司每日收盤行情 (包含華新 1605 等所有本土上市)
+        url_l = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
         req_l = urllib.request.Request(url_l, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req_l) as response:
             res_data = json.loads(response.read().decode('utf-8'))
             for item in res_data:
-                if item.get('公司代號') == pure_code:
-                    c_name = item.get('公司簡稱', '').strip()
-                    return f"{c_name} ({symbol})"
-                    
-        # 2. 若上市找不到，查詢上櫃公司名單
-        url_o = "https://openapi.twse.com.tw/v1/opendata/t187ap03_O"
+                if item.get('Code') == pure_code or item.get('證券代號') == pure_code:
+                    name = item.get('Name') or item.get('證券名稱')
+                    if name:
+                        return f"{name.strip()} ({symbol})"
+                        
+        # 2. 若上市找不到，查詢所有上櫃公司每日收盤行情
+        url_o = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
         req_o = urllib.request.Request(url_o, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req_o) as response:
             res_data = json.loads(response.read().decode('utf-8'))
             for item in res_data:
-                if item.get('公司代號') == pure_code:
-                    c_name = item.get('公司簡稱', '').strip()
-                    return f"{c_name} ({symbol})"
+                if item.get('SecuritiesCompanyCode') == pure_code or item.get('代號') == pure_code:
+                    name = item.get('CompanyName') or item.get('名稱')
+                    if name:
+                        return f"{name.strip()} ({symbol})"
     except Exception:
         pass
         
-    # 第三道防線：萬一網路異常，回傳原始代碼，確保程式絕不崩潰
+    # 第三道防線：萬一網路異常或新股上市未列入，回傳原始代碼，確保程式不崩潰
     return symbol
 
 # --- 3. 技術指標計算 ---
@@ -100,7 +89,7 @@ def get_signal_markers(df):
 
 # --- 5. UI 介面 ---
 st.sidebar.title("🚀 股票買賣時機")
-symbol_input = st.sidebar.text_input("輸入股票代碼", value="3481")
+symbol_input = st.sidebar.text_input("輸入股票代碼", value="1605") # 預設改為 1605 方便測試
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -126,7 +115,7 @@ if symbol_input:
     data, final_symbol = fetch_stock_data(symbol_input)
 
     if not data.empty:
-        # 【功能升級】自動取得完全繁體中文的股票/ETF名稱
+        # 【完美修正】現在 1605 會正確顯示為：華新 (1605.TW)
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
@@ -178,7 +167,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 賣出點（🟢 綠色圓點 + 懸浮動態條件）
+        # 賣出點（🟢 綠色圓點 + 滿足條件）
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
