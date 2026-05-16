@@ -128,6 +128,8 @@ ALL_STOCKS = {
 import streamlit as pd
 from streamlit_searchbox import st_searchbox
 
+import streamlit.components.v1 as components
+
 # 格式化選單名稱
 ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
 
@@ -183,45 +185,92 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【動態字首鎖定】一體化選單 ---
+# --- 5. UI 介面 與 【真正免按 Enter】字首鎖定單一搜尋欄 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化 Session State 記憶狀態
-if "previous_clean_filter" not in st.session_state:
-    st.session_state.previous_clean_filter = ALL_STOCKS_LIST
-
-# 建立一個隱藏的文字輸入框，專門用來捕捉使用者即時敲擊鍵盤的字串（不需要按 Enter）
-user_typing_keyword = st.sidebar.text_input(
-    "請輸入股票代碼進行篩選 (字首強鎖定)",
-    value="",
-    key="realtime_search_keyword_input"
+# 使用原生的 text_input 做為唯一的搜尋欄外觀
+search_input_val = st.sidebar.text_input(
+    "輸入股票代碼",
+    value="2330",
+    key="stock_search_input_field"
 ).strip()
 
-# 【鋼鐵核心過濾邏輯】強制實施字首對齊。只要不是使用者打的數字開頭，直接從選單蒸發！
-if user_typing_keyword:
-    dynamic_filtered_options = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items() 
-        if k.startswith(user_typing_keyword) or v.startswith(user_typing_keyword)
-    ]
-    if not dynamic_filtered_options:
-        dynamic_filtered_options = ["❌ 找不到符合字首的股票"]
-else:
-    # 使用者沒打字時，預設顯示全部股票
-    dynamic_filtered_options = ALL_STOCKS_LIST
+# 生成符合 HTML 標準的 datalist 標籤，把台股名單餵進去
+datalist_options_html = "".join([f'<option value="{item}">' for item in ALL_STOCKS_LIST])
 
-# 丟給原生 selectbox 顯示。此時不論前端怎麼做模糊搜尋，因為名單已經被我們在後台「閹割」過了，
-# 所以絕對不會跑出像 1466、3669 這種首碼不對的雜魚！
-selected_stock_str = st.sidebar.selectbox(
-    "請在下方選單直接點擊切換：",
-    options=dynamic_filtered_options,
-    key="secured_stock_selectbox_widget"
-)
+# 利用前端 JavaScript 動態攔截輸入框：
+# 1. 關閉瀏覽器自帶的討人厭歷史紀錄 (autocomplete="off")
+# 2. 將 HTML5 的 datalist 直接綁定到這個輸入框上，讓它打字時自動彈出原生選單
+# 3. 核心過濾邏輯：重寫模糊搜尋，強迫改為「字首對齊」！只要代碼不是打的數字開頭，直接在選單隱藏！
+# 4. 監聽 input 事件，只要使用者滑鼠點擊選單或打字完全匹配，立刻模擬 Enter 送出，大圖表直接動態更新！
+js_injector = f"""
+<script>
+    function patchStreamlitInput() {{
+        // 遍歷所有主頁面與側邊欄的輸入框
+        var inputs = window.parent.document.querySelectorAll('input[type="text"]');
+        inputs.forEach(function(input) {{
+            if (!input.hasAttribute('list')) {{
+                // 1. 綁定強鎖定的數據選單
+                input.setAttribute('list', 'stocks_prefix_datalist');
+                input.setAttribute('autocomplete', 'off');
+                
+                // 2. 監聽打字與點選事件 (免按 Enter 核心)
+                input.addEventListener('input', function(e) {{
+                    var currentVal = e.target.value.trim();
+                    var datalist = window.parent.document.getElementById('stocks_prefix_datalist');
+                    var options = datalist.querySelectorAll('option');
+                    
+                    // 鋼鐵限制：動態過濾下拉選單內容，只允許「字首完全符合」的項目顯示
+                    options.forEach(function(opt) {{
+                        var optVal = opt.value; // 例如 "2231 為升"
+                        if (optVal.startsWith(currentVal)) {{
+                            opt.disabled = false;
+                        } else {{
+                            opt.disabled = true; // 首碼不符，直接閹割隱藏，絕無雜魚
+                        }}
+                    }});
+                    
+                    // 如果輸入的值剛好完美對應名單中的某個項目，或者打滿了4位代碼且存在於選單，直接觸發變更
+                    options.forEach(function(opt) {{
+                        if (opt.value === currentVal || opt.value.split(' ')[0] === currentVal) {{
+                            if(opt.value === currentVal) {{
+                                e.target.value = opt.value.split(' ')[0]; // 自動校正回純代碼送給後台
+                            }}
+                            // 模擬按下 Enter 鍵讓 Streamlit 後台即時重新渲染圖表
+                            var event = new KeyboardEvent('keydown', {{
+                                bubbles: true, cancelable: true, key: 'Enter', keyCode: 13
+                            }});
+                            e.target.dispatchEvent(event);
+                        }}
+                    }});
+                }});
+            }}
+        }});
+    }}
+    
+    // 確保在 Streamlit DOM 加載完成後以及定時反覆檢查注入，防止組件刷新失效
+    if (window.parent.document.readyState === 'complete') {{
+        patchStreamlitInput();
+    }}
+    setInterval(patchStreamlitInput, 500);
+</script>
 
-# 解析出最終要畫圖的代碼
-if selected_stock_str and "❌" not in selected_stock_str:
-    final_target_code = selected_stock_str.split(" ")[0]
+<datalist id="stocks_prefix_datalist">
+    {datalist_options_html}
+</datalist>
+"""
+# 將這段不影響外觀的控制腳本靜默注入到頁面中
+components.html(js_injector, height=0, width=0)
+
+# 解析並防呆最終要繪製的股票代碼
+final_target_code = search_input_val.split(" ")[0]
+if not final_target_code or final_target_code not in ALL_STOCKS:
+    # 如果使用者正在打字途中（例如只打了 2、12、223 尚未完成選擇），維持畫面上一次的股票，不要崩潰噴錯
+    if 'last_valid_stock' not in st.session_state:
+        st.session_state.last_valid_stock = "2330"
+    final_target_code = st.session_state.last_valid_stock
 else:
-    final_target_code = "2330" # 防呆預設
+    st.session_state.last_valid_stock = final_target_code
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
