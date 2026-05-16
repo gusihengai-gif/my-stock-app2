@@ -180,19 +180,43 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【打字免按 Enter】即時連動一體化搜尋欄 ---
+# --- 5. UI 介面 與 【字首強鎖定】免按 Enter 即時連動搜尋欄 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用全新升級的 selectbox 作為搜尋框：自帶打字過濾功能，且打字免按 Enter 畫面直接聯動！
-# 並且徹底封鎖歷史輸入黑框，不分類別純淨顯示
-selected_stock_str = st.sidebar.selectbox(
-    "請輸入或選擇股票代碼/名稱 (支援免按 Enter 即時連動)",
-    options=ALL_STOCKS_LIST,
-    index=77, # 預設停在台積電 (2330)，你可以自由更改預設 index
-    help="直接在框內輸入數字（如 233），即可自動過濾首碼完全符合的股票名單！"
+# 初始化搜尋文字的 State，確保打字時可以不按 Enter 即時刷新名單
+if 'search_input' not in st.session_state:
+    st.session_state.search_input = ""
+
+# 1. 建立一個純文字輸入框接收代碼，利用 key 機制讓它每一秒打字都直接觸發後台
+search_q = st.sidebar.text_input(
+    "請輸入股票代碼搜尋 (輸入 223 立即鎖定開頭)", 
+    value=st.session_state.search_input,
+    key="search_input_field"
 )
 
-# 直接解析出使用者打字選定的股票代碼，瞬間傳遞給後端 K 線圖
+# 2. 【鋼鐵嚴格過濾】只保留代碼開頭完全相符的股票，從源頭斬斷 1233 或 其他亂跳的數字
+q_clean = search_q.strip()
+if q_clean:
+    filtered_options = [
+        f"{k} {v}" for k, v in ALL_STOCKS.items() 
+        if k.startswith(q_clean) or v.startswith(q_clean)
+    ]
+else:
+    filtered_options = ALL_STOCKS_LIST
+
+# 如果亂輸入導致沒東西，預設留存全部名單
+if not filtered_options:
+    filtered_options = ALL_STOCKS_LIST
+
+# 3. 讓 selectbox 只渲染過濾後的極淨名單，這樣它就絕對沒機會顯示包含 2 的其他雜魚股票了
+selected_stock_str = st.sidebar.selectbox(
+    "請點擊確認或精細調整",
+    options=filtered_options,
+    index=0,
+    label_visibility="collapsed" # 隱藏標籤讓畫面更好看
+)
+
+# 解析最終選定的股票代碼
 final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
@@ -253,7 +277,6 @@ if final_target_code:
 
         fig = go.Figure()
         
-        # 繪製實價曲線
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines', name='實價',
