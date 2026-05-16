@@ -180,38 +180,27 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一動態選單】字首強鎖定搜尋欄一體機 ---
+# --- 5. UI 介面 與 【字首強鎖定搜尋函數】單一選單一體機 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 獲取使用者在動態選單中正在搜尋或選取的狀態
-# 這裡利用 Streamlit Widget 內置的狀態綁定，動態擷取當前過濾文字
-current_search_keyword = ""
-if "stock_selector_key" in st.session_state and st.session_state.stock_selector_key:
-    # 擷取代碼部分進行字首比對
-    current_search_keyword = st.session_state.stock_selector_key.split(" ")[0].strip()
+# 關鍵核心黑科技：寫一個給 selectbox 專用的嚴格字首篩選器
+# 只要輸入 66，就只會去匹配股票代碼開頭是 66 的項目，其餘一概不留
+def strict_prefix_search(option, search_term):
+    if not search_term:
+        return True
+    clean_search = search_term.strip()
+    # 嚴格限制：代碼開頭（startswith）一定要符合使用者的輸入
+    return option.startswith(clean_search)
 
-# 【鋼鐵核心過濾邏輯】即時清洗選單數據源！
-# 當你打 11 或 223，後台立刻過濾，把不符合開頭的 2023, 2423 雜魚通通丟掉，只留對的名單送給下拉選單顯示！
-if current_search_keyword:
-    filtered_list = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items() 
-        if k.startswith(current_search_keyword)
-    ]
-    # 如果打字打太快或不小心沒對應到，保留原本完整名單防呆
-    if not filtered_list:
-        filtered_list = ALL_STOCKS_LIST
-else:
-    filtered_list = ALL_STOCKS_LIST
-
-# 完美的單一搜尋選單外觀，點開後既有下拉選項，又絕無模糊搜尋的雜魚干擾！
+# 完美的單一搜尋選單外觀，透過 search_by 直接閹割掉原生模糊搜尋，強迫遵守字首規則！
 selected_stock_str = st.sidebar.selectbox(
     "請選擇或輸入股票代碼/名稱",
-    options=filtered_list,
-    index=0 if current_search_keyword else 77,  # 有打字就鎖定過濾後第一檔，沒打字預設台積電
-    key="stock_selector_key"
+    options=ALL_STOCKS_LIST,
+    index=77,  # 預設台積電 2330
+    search_by=strict_prefix_search  # 灌入我們寫的鋼鐵過濾規則，徹底消滅包含型雜魚
 )
 
-# 解析出當前選取的股票代碼，傳給後端圖表
+# 解析出當前選取的股票代碼，即時連動右方大畫面
 final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
