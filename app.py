@@ -131,7 +131,6 @@ import streamlit.components.v1 as components
 import json
 
 # --- 1. 格式化選單名稱 ---
-# 建立一個方便搜尋的對照表，同時保留純代碼清單
 ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
 
 def get_stock_display_name(symbol):
@@ -159,7 +158,7 @@ def calculate_indicators(df):
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     return df
 
-# --- 3. 核心訊號邏輯 ---
+# --- 3. 核心訊號邏輯 (賣出需「同時成立」) ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
@@ -171,6 +170,7 @@ def get_signal_markers(df):
         prev_row = df.iloc[i-1]
         
         if not in_position:
+            # 買入訊號：MA黃金交叉 且 RSI5 > 50
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
@@ -185,91 +185,59 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 4. UI 介面 與 【單一 Selectbox 鋼鐵字首連動過濾機制】 ---
+# --- 4. UI 介面 與 【單一原生文字搜尋欄：鋼鐵字首手機流暢打字機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 初始化 session_state，維持全域狀態穩定
-if "search_input" not in st.session_state:
-    st.session_state.search_input = ""
+# 初始化 session_state，維持全域狀態與打字緩衝穩定
 if "final_target_code" not in st.session_state:
-    st.session_state.final_target_code = "2330"
+    st.session_state.final_target_code = "2330"  # 預設台積電
+if "typed_buffer" not in st.session_state:
+    st.session_state.typed_buffer = "2330"
 
-# 使用 HTML/JS 監聽 selectbox 的輸入框，手一打字，不用按 Enter 毫秒級回傳給 Python
-import streamlit.components.v1 as components
-components.html(
-    """
-    <script>
-    const interval = setInterval(() => {
-        // 抓取 Streamlit selectbox 的原生輸入框
-        const input = window.parent.document.querySelector('div[data-testid="stSelectbox"] input');
-        if (input) {
-            clearInterval(interval);
-            
-            // 監聽鍵盤輸入事件
-            input.addEventListener('input', (e) => {
-                const val = e.target.value.trim();
-                // 即時將打字內容送到背景的文字交換區，觸發 Streamlit 重新渲染
-                const widget = window.parent.document.querySelector('div[data-testid="stTextInput"] input');
-                if (widget) {
-                    widget.value = val;
-                    widget.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            });
-        }
-    }, 500);
-    </script>
-    """,
-    height=0,
-)
+# 當使用者在手機鍵盤上每打一個字、或修改內容時觸發的即時連動
+def on_search_input_change():
+    current_val = st.session_state.text_search_input_field.strip()
+    st.session_state.typed_buffer = current_val
+    # 如果剛好在手機上完整打出了 4 位有效台股代碼，直接為使用者切換大圖表
+    if current_val in ALL_STOCKS:
+        st.session_state.final_target_code = current_val
 
-# 【背景資料交換區】不可見，純用來接收 JS 傳回來的未按 Enter 打字內容
-def sync_input():
-    st.session_state.search_input = st.session_state.hidden_tracker.strip()
+# 唯一的原生文字搜尋欄（100% 正常喚起手機鍵盤，絕不卡死、絕不失效）
+search_query = st.sidebar.text_input(
+    "請輸入或搜尋股票代碼：",
+    value=st.session_state.typed_buffer,
+    key="text_search_input_field",
+    on_change=on_search_input_change
+).strip()
 
-st.sidebar.text_input(
-    "隱藏同步器", 
-    key="hidden_tracker", 
-    label_visibility="collapsed", 
-    on_change=sync_input
-)
+# 隨時確保後台變數與你手機正輸入的內容保持完全同步
+st.session_state.typed_buffer = search_query
 
-# 核心：鋼鐵字首過濾邏輯
-current_typing = st.session_state.search_input
-
-if current_typing:
-    # 嚴格校正：只抓出「開頭完全符合」你打字內容的股票，徹底洗掉包含型雜魚！
-    filtered_options = [
-        f"{k} {v}" for k, v in ALL_STOCKS.items()
-        if k.startswith(current_typing)
+# 鋼鐵字首過濾核心：用最乾淨的 Python 邏輯剔除任何包含型雜魚
+if search_query:
+    matched_stocks = [
+        (k, v) for k, v in ALL_STOCKS.items()
+        if k.startswith(search_query)
     ]
-    # 如果打字太快查無此字首，則不保留空選單防止崩潰
-    if not filtered_options:
-        filtered_options = ALL_STOCKS_LIST
-else:
-    filtered_options = ALL_STOCKS_LIST
+    
+    if matched_stocks:
+        # 當你輸入 223，這裡展開的名單絕對 100% 只有 223 開頭的股票！
+        st.sidebar.caption(f"💡 請點選符合字首 `{search_query}` 的股票切換：")
+        
+        # 限制最多顯示前 12 檔，避免手機畫面被拉得太長
+        for k, v in matched_stocks[:12]:
+            # 用側邊欄輕量化按鈕呈現，手指輕輕一戳，直接秒切換！
+            if st.sidebar.button(f"📊 {k} {v}", key=f"btn_stock_{k}", use_container_width=True):
+                st.session_state.final_target_code = k
+                st.session_state.typed_buffer = k
+                st.rerun()
+    else:
+        st.sidebar.error("❌ 找不到此字首開頭的股票")
 
-# 尋找當前預設值在過濾清單中的索引位置
-try:
-    current_label = f"{st.session_state.final_target_code} {ALL_STOCKS[st.session_state.final_target_code]}"
-    default_idx = filtered_options.index(current_label)
-except ValueError:
-    default_idx = 0
-
-# 畫面唯一的單一搜尋下拉選單（外觀與你最後一張截圖完全一模一樣）
-selected_stock = st.sidebar.selectbox(
-    "請輸入或選擇股票代碼：",
-    options=filtered_options,
-    index=default_idx,
-    key="main_selectbox"
-)
-
-# 當使用者最終點選下拉選單的某檔股票時，更新最終代碼
-if selected_stock:
-    st.session_state.final_target_code = selected_stock.split(" ")[0]
-
+# 最終送進去抓取數據渲染 K 線圖的黃金代碼
 final_target_code = st.session_state.final_target_code
 
-# --- 5. 觀測週期與圖表渲染 ---
+# --- 5. 觀測週期選擇與圖表渲染 ---
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
