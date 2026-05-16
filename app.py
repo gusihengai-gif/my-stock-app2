@@ -130,7 +130,7 @@ from streamlit_searchbox import st_searchbox
 import streamlit.components.v1 as components
 import json
 
-# 格式化選單名稱（供後台 yfinance 匹配使用）
+# 格式化選單名稱
 ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
 
 def get_stock_display_name(symbol):
@@ -185,27 +185,27 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一原生 JavaScript 即時連動搜尋欄】 ---
+# --- 5. UI 介面 與 【單一原生 行動裝置觸控優化 搜尋欄】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 將 Python 的台股字典轉換成前端 JavaScript 能秒速過濾的 JSON 格式
+# 將 Python 的台股字典轉換成前端 JSON 格式
 stocks_json = json.dumps(ALL_STOCKS)
 
-# 透過前端監聽 input 事件，繞過 Streamlit 必須按 Enter 的硬傷，同時強制 startWith 字首鎖定
+# 升級版 HTML：針對行動裝置阻斷 blur 事件並優化觸控焦點
 custom_search_html = f"""
 <div style="font-family: sans-serif; color: #ffffff; padding: 0px; margin: 0px;">
     <label style="font-size: 14px; font-weight: 500; display: block; margin-bottom: 8px;">請輸入股票代碼：</label>
     <div style="position: relative; width: 100%;">
-        <input type="text" id="stockSearchInput" placeholder="🔍 輸入代碼即時字首過濾..." 
-            style="width: 100%; padding: 10px 12px; background-color: #1A1C24; color: #ffffff; 
-                   border: 1px solid #4A4A4A; border-radius: 8px; font-size: 15px; outline: none; box-sizing: border-box;">
+        <input type="text" id="stockSearchInput" placeholder="🔍 輸入代碼即時字首過濾..." autocomplete="off" inputmode="numeric"
+            style="width: 100%; padding: 12px; background-color: #1A1C24; color: #ffffff; 
+                   border: 1px solid #4A4A4A; border-radius: 8px; font-size: 16px; outline: none; box-sizing: border-box;">
         <div id="dropdownList" 
-            style="position: absolute; top: 44px; left: 0; width: 100%; max-height: 250px; overflow-y: auto; 
+            style="position: absolute; top: 48px; left: 0; width: 100%; max-height: 250px; overflow-y: auto; 
                    background-color: #1A1C24; border: 1px solid #4A4A4A; border-radius: 8px; 
-                   box-shadow: 0px 8px 16px rgba(0,0,0,0.5); z-index: 9999; display: none; box-sizing: border-box;">
+                   box-shadow: 0px 8px 16px rgba(0,0,0,0.5); z-index: 99999; display: none; box-sizing: border-box;">
         </div>
     </div>
 </div>
@@ -215,7 +215,7 @@ custom_search_html = f"""
     const inputField = document.getElementById('stockSearchInput');
     const dropdown = document.getElementById('dropdownList');
 
-    // 當使用者手打任何字，不用等 Enter，直接毫秒級即時觸發過濾
+    // 即時字首過濾核心
     inputField.addEventListener('input', function() {{
         const query = this.value.trim();
         dropdown.innerHTML = '';
@@ -227,35 +227,30 @@ custom_search_html = f"""
 
         let hasMatches = false;
         
-        // 核心鋼鐵字首篩選：絕對限制只抓開頭相符的
         for (const [code, name] of Object.entries(stocksData)) {{
             if (code.startsWith(query)) {{
                 hasMatches = true;
                 const item = document.createElement('div');
-                item.style.padding = '10px 14px';
+                item.style.padding = '12px 14px';
                 item.style.cursor = 'pointer';
-                item.style.fontSize = '14px';
+                item.style.fontSize = '15px';
                 item.style.borderBottom = '1px solid #2D313E';
                 item.style.color = '#E0E0E0';
+                item.style.webkitTapHighlightColor = 'transparent'; // 移除手機網頁點擊時的藍色陰影
                 item.innerText = code + ' ' + name;
 
-                // 滑鼠移入高亮效果
-                item.onmouseover = function() {{ this.style.backgroundColor = '#2D313E'; this.style.color = '#ffffff'; }};
-                item.onmouseout = function() {{ this.style.backgroundColor = 'transparent'; this.style.color = '#E0E0E0'; }};
+                // 關鍵優化：使用 mousedown 代替 click，搶在手機虛擬鍵盤收起（blur）之前攔截觸控事件
+                item.addEventListener('mousedown', function(e) {{
+                    e.preventDefault(); // 阻止輸入框失去焦點導致下拉選單消失
+                    selectStock(code);
+                }});
                 
-                // 點擊選項，免按 Enter 直接更新
-                item.onclick = function() {{
-                    inputField.value = code;
-                    dropdown.style.display = 'none';
-                    
-                    // 將選定的代碼回傳給 Streamlit 後台更新大圖表
-                    const token = Math.random().toString(36);
-                    window.parent.postMessage({{
-                        type: 'streamlit:set_widget_value',
-                        key: 'js_selected_stock',
-                        value: code + '|' + token
-                    }}, '*');
-                }};
+                // 備用觸控支援
+                item.addEventListener('touchstart', function(e) {{
+                    e.preventDefault();
+                    selectStock(code);
+                }});
+
                 dropdown.appendChild(item);
             }}
         }}
@@ -267,8 +262,29 @@ custom_search_html = f"""
         }}
     }});
 
-    // 點擊網頁外圍自動收起下拉選單
-    document.addEventListener('click', function(e) {{
+    function selectStock(code) {{
+        inputField.value = code;
+        dropdown.style.display = 'none';
+        inputField.blur(); // 收起手機鍵盤
+        
+        // 傳送通知給 Streamlit 後台
+        const token = Math.random().toString(36);
+        window.parent.postMessage({{
+            type: 'streamlit:set_widget_value',
+            key: 'js_selected_stock',
+            value: code + '|' + token
+        }}, '*');
+    }}
+
+    // 當輸入框聚焦時，如果裡面有字，重新展開選單
+    inputField.addEventListener('focus', function() {{
+        if (this.value.trim()) {{
+            this.dispatchEvent(new Event('input'));
+        }}
+    }});
+
+    // 點擊外面收起
+    document.addEventListener('mousedown', function(e) {{
         if (!inputField.contains(e.target) && !dropdown.contains(e.target)) {{
             dropdown.style.display = 'none';
         }}
@@ -276,11 +292,11 @@ custom_search_html = f"""
 </script>
 """
 
-# 在側邊欄建立這根乾淨無瑕、能夠即時連動的前端搜尋元件
 with st.sidebar:
-    components.html(custom_search_html, height=310, scrolling=False)
+    # 稍微放大高度給手機版的下拉清單留出足夠空間
+    components.html(custom_search_html, height=330, scrolling=False)
 
-# 在 Python 後台隱藏式接收前端傳回來的確定代碼
+# 在 Python 後台接收確定代碼
 if "js_selected_stock" in st.session_state and st.session_state.js_selected_stock:
     raw_val = st.session_state.js_selected_stock
     if "|" in raw_val:
