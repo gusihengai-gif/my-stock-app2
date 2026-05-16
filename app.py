@@ -1,3 +1,43 @@
+import streamlit as st
+import pandas as pd
+import yfinance as yf
+import plotly.graph_objects as go
+import numpy as np
+
+# --- 1. 網頁基礎配置 ---
+st.set_page_config(page_title="股票買賣時機", layout="wide")
+
+# --- 2. 鋼鐵級繁體中文對照表 (無網路延遲、100% 穩定，1605 華新保證出繁中) ---
+TAIWAN_STOCK_MAP = {
+    # 核心觀測與熱門股
+    "1605": "華新", "2364": "倫飛", "2454": "聯發科", "2330": "台積電", 
+    "2317": "鴻海", "3481": "群創", "2409": "面板", "2303": "聯電", 
+    "2603": "長榮", "2609": "陽明", "2615": "萬海", "2618": "長榮航", "2610": "華航",
+    # 主流高股息、權值 ETF
+    "00919": "群益台灣精選高息", "0056": "元大高股息", "00878": "國泰永續高股息", 
+    "00929": "復華台灣科技優息", "0050": "元大台灣50", "006208": "富邦台50",
+    "00940": "元大台灣價值高息", "00939": "統一台灣高息動能", "00713": "元大台灣高息低波"
+}
+
+@st.cache_data(ttl=86400)
+def get_stock_display_name(symbol):
+    pure_code = symbol.split('.')[0].strip()
+    
+    # 第一道防線：直接從本地鋼鐵清單秒讀
+    if pure_code in TAIWAN_STOCK_MAP:
+        return f"{TAIWAN_STOCK_MAP[pure_code]} ({symbol})"
+    
+    # 第二道防線：冷門股票使用 yfinance 內建快速模組查找
+    try:
+        ticker = yf.Ticker(symbol)
+        name = ticker.fast_info.get('name', '')
+        if name:
+            return f"{name} ({symbol})"
+    except Exception:
+        pass
+        
+    return symbol
+
 # --- 3. 技術指標計算 ---
 def calculate_indicators(df):
     df = df.copy().astype(float)
@@ -71,7 +111,6 @@ if symbol_input:
     data, final_symbol = fetch_stock_data(symbol_input)
 
     if not data.empty:
-        # 呼叫鋼鐵級名稱轉換函數
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
@@ -115,7 +154,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 買入點
+        # 買入點 (紅色正三角形)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['買入點'],
             mode='markers', name='買入',
@@ -123,7 +162,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 賣出點 (🟢 綠色圓點 + 條件顯示)
+        # 賣出點 (符合要求：綠色圓點 🟢 + 顯示詳細條件)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
