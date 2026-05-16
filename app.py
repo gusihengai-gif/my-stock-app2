@@ -7,18 +7,6 @@ import numpy as np
 # --- 1. 網頁基礎配置 ---
 st.set_page_config(page_title="股票買賣時機", layout="wide")
 
-# 注入 CSS 核心黑魔法：強制關閉 Streamlit 欄位的 autocomplete、自動提示與歷史紀錄彈窗
-st.markdown(
-    """
-    <style>
-    input {
-        autocomplete: off !important;
-    }
-    </style>
-    """, 
-    unsafe_allow_html=True
-)
-
 # --- 2. 鋼鐵級全台股 2000+ 完整名冊 (純淨不分類) ---
 ALL_STOCKS = {
     # 【1100-1400 水泥、食品、塑膠、紡織】
@@ -30,7 +18,7 @@ ALL_STOCKS = {
     "1310": "台苯", "1312": "國喬", "1313": "聯成", "1314": "中石化", "1315": "達新", "1316": "上曜", "1319": "東陽",
     "1321": "大洋", "1323": "永裕", "1324": "地球", "1325": "恆大", "1326": "台化", "1337": "再生-KY", "1338": "廣華-KY",
     "1339": "昭輝", "1340": "勝悅-KY", "1341": "富林-KY", "1342": "八貫", "1402": "遠東新", "1409": "新纖", "1410": "新紡",
-    "1413": "宏洲", "1414": "東和", "1416": "廣豐", "1417": "嘉裕", "1418": "東華", "1419": "新利虹", "1423": "利華",
+    "1413": "宏洲", "1414": "東和", "1416": "廣丰", "1417": "嘉裕", "1418": "東華", "1419": "新利虹", "1423": "利華",
     "1434": "福懋", "1435": "中福", "1436": "華安", "1439": "中和", "1440": "南紡", "1441": "大東", "1442": "名軒",
     "1444": "新昕纖", "1447": "力鵬", "1449": "佳和", "1451": "年興", "1452": "宏益", "1453": "大將", "1454": "台富",
     "1455": "集盛", "1457": "宜進", "1459": "聯發", "1460": "宏遠", "1463": "強盛", "1464": "得力", "1465": "偉全",
@@ -137,6 +125,9 @@ ALL_STOCKS = {
     "00943": "兆豐電子高息等權重", "00944": "野村趨勢動能高股息", "00946": "群益科技高股息成長"
 }
 
+# 格式化選單名稱
+ALL_STOCKS_LIST = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
+
 def get_stock_display_name(symbol):
     pure_code = symbol.split('.')[0].strip()
     if pure_code in ALL_STOCKS:
@@ -188,37 +179,36 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 嚴格首碼即時過濾機制 ---
+# --- 5. UI 介面 與 徹底封鎖 1233 的「前端過濾下拉選單」 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-if 'selected_stock_code' not in st.session_state:
-    st.session_state.selected_stock_code = "6770"
+# 用來即時在前端精準攔截開頭數字的秘密武器
+filter_input = st.sidebar.text_input("請輸入股票代碼搜尋 (免按Enter，支援模糊打字)")
 
-# 文字輸入框：加入特殊控制元件防範彈窗
-search_query = st.sidebar.text_input(
-    "請輸入股票代碼搜尋 (免按Enter)", 
-    value="",
-    autocomplete="new-password" # 絕招：這能強迫大部分現代瀏覽器放棄跳出歷史輸入選單
-)
-
-# 核心篩選重整：【嚴格限制開頭必須完全吻合】
-matched_stocks = []
-if search_query.strip():
-    q = search_query.strip()
-    # 嚴格比對：代碼必須是該字串開頭！徹底解決打 2跑出 1101，或打 233跑出 1233的狀況
-    matched_stocks = [
-        (k, v) for k, v in ALL_STOCKS.items() 
+# 關鍵點：用動態清單把關！【嚴格限制開頭】
+# 只要打 233，清單內就「只會剩下開頭是 233」的股票，1233 在後台直接被拔掉不給過
+if filter_input.strip():
+    q = filter_input.strip()
+    filtered_options = [
+        f"{k} {v}" for k, v in ALL_STOCKS.items() 
         if k.startswith(q) or v.startswith(q)
     ]
+else:
+    filtered_options = ALL_STOCKS_LIST
 
-# 若有精準對應的開頭股票，以按鈕呈現
-if matched_stocks:
-    st.sidebar.write("🔍 請直接點擊下方結果：")
-    for code, name in matched_stocks[:10]:
-        if st.sidebar.button(f"📌 {code} {name}", key=f"btn_{code}"):
-            st.session_state.selected_stock_code = code
+# 如果過濾後的名單是空的（例如亂打字），就保持完整名單避免出錯
+if not filtered_options:
+    filtered_options = ALL_STOCKS_LIST
 
-final_target_code = st.session_state.selected_stock_code
+# 下拉選單：它只會渲染過濾乾淨的名單，而且內建打字秒對應，黑框歷史彈窗徹底失效！
+selected_stock_str = st.sidebar.selectbox(
+    "請選擇股票",
+    options=filtered_options,
+    index=0
+)
+
+# 解析出最終要查詢的股票代碼
+final_target_code = selected_stock_str.split(" ")[0]
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
