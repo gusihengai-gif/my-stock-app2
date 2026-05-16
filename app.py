@@ -7,7 +7,29 @@ import numpy as np
 # --- 1. 網頁基礎配置 ---
 st.set_page_config(page_title="股票買賣時機", layout="wide")
 
-# --- 2. 技術指標計算 ---
+# --- 2. 全自動股票名稱查詢函數 (支援所有股票，且不卡死) ---
+@st.cache_data(ttl=86400) # 名字基本上不會變，快取一天，速度極快
+def get_stock_display_name(symbol):
+    try:
+        # 確保代碼格式，例如輸入 2454 自動補上 .TW
+        target_sym = f"{symbol}.TW" if "." not in symbol else symbol
+        
+        # 使用 yf.Search 搜尋該代碼的精準名稱
+        search = yf.Search(target_sym, max_results=1)
+        if search.quotes:
+            shortname = search.quotes[0].get('shortname', '')
+            longname = search.quotes[0].get('longname', '')
+            # 優先使用短名稱，沒有就用長名稱
+            name = shortname if shortname else longname
+            
+            if name:
+                return f"{name} ({target_sym})"
+        return target_sym
+    except Exception:
+        # 萬一 yfinance 查詢失敗，直接回傳代碼，確保程式絕對不崩潰
+        return f"{symbol}.TW" if "." not in symbol else symbol
+
+# --- 3. 技術指標計算 ---
 def calculate_indicators(df):
     df = df.copy().astype(float)
     df['MA5'] = df['Close'].rolling(window=5).mean()
@@ -26,11 +48,11 @@ def calculate_indicators(df):
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     return df
 
-# --- 3. 核心訊號邏輯 (賣出需「同時成立」) ---
+# --- 4. 核心訊號邏輯 (賣出需「同時成立」) ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
-    sell_reasons = [""] * len(df) # 記錄賣出時的條件文字
+    sell_reasons = [""] * len(df)
     in_position = False 
     
     for i in range(1, len(df)):
@@ -50,13 +72,13 @@ def get_signal_markers(df):
             
             if cond_rsi and cond_price and cond_kdj:
                 sell_markers[i] = row['Close']
-                sell_reasons[i] = "RSI死叉 + KDJ死叉 + 跌破MA5" # 存入文字
+                sell_reasons[i] = "RSI死叉 + KDJ死叉 + 跌破MA5"
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 4. UI 介面 ---
+# --- 5. UI 介面 ---
 st.sidebar.title("🚀 股票買賣時機")
-symbol_input = st.sidebar.text_input("輸入股票代碼", value="2364")
+symbol_input = st.sidebar.text_input("輸入股票代碼", value="3481")
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -68,11 +90,12 @@ for i, (lab, val) in enumerate(periods.items()):
     if p_cols[i].button(lab):
         st.session_state.view_days = val
 
-# --- 5. 資料抓取 ---
+# --- 6. 資料抓取 ---
 @st.cache_data(ttl=3600)
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
     data = yf.download(target_sym, period="2y", auto_adjust=False)
+    # 如果找不到，嘗試上櫃市場 (.TWO)
     if data.empty and ".TW" in target_sym:
         target_sym = target_sym.replace(".TW", ".TWO")
         data = yf.download(target_sym, period="2y", auto_adjust=False)
@@ -82,7 +105,9 @@ if symbol_input:
     data, final_symbol = fetch_stock_data(symbol_input)
 
     if not data.empty:
-        st.subheader(f"📈 {final_symbol}")
+        # 【全自動更新】從網路動態查詢該股票的中文/英文名稱
+        display_title = get_stock_display_name(symbol_input)
+        st.subheader(f"📈 {display_title}")
         
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -95,7 +120,7 @@ if symbol_input:
         view_df['日期顯示'] = view_df.index.strftime('%Y-%m-%d')
         view_df['月份'] = view_df.index.strftime('%Y-%m')
 
-        # --- 6. X軸標籤優化邏輯 ---
+        # --- X軸標籤優化邏輯 ---
         tick_vals = []
         tick_texts = []
         days = st.session_state.view_days
@@ -132,7 +157,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 賣出點 (關鍵修正：改為綠色圓點 'circle'，並加入提示條件)
+        # 賣出點 (綠色圓點 🟢 + 滿足條件)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
