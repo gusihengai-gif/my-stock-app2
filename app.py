@@ -185,42 +185,47 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【單一純淨搜尋欄：中英數全支援 + 智慧字首強鎖定】 ---
+# --- 5. UI 介面 與 【單一搜尋欄：純 Python 鋼鐵字首鎖定機制】 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用 session_state 記錄最終要查的四碼代碼，確保圖表不漏接
+# 初始化 session_state 確保圖表切換穩定
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 唯一的、不限制任何輸入法的原生文字框
-# 當你在手機點擊「勾勾」確認時，輸入的內容會直接送入 search_query 變數中
-search_query = st.sidebar.text_input(
+# 1. 獲取使用者在 selectbox 裡面即時打字搜尋的內容
+# 如果使用者還沒打字，預設文字就是目前選中的股票代碼（例如 2330）
+current_input = st.session_state.get("pure_selectbox_search", st.session_state.final_target_code).strip()
+
+# 2. 鋼鐵字首清洗核心：如果使用者有打字，強制限制「只抓出以此數字開頭」的股票
+if current_input:
+    # 這裡徹底過濾掉任何模糊匹配！打 223 就絕對不會出現 2023 或 2423
+    filtered_stocks = [
+        f"{k} {v}" for k, v in ALL_STOCKS.items()
+        if k.startswith(current_input)
+    ]
+    # 如果過濾後是空的（例如打到一半），就退回顯示全部，避免畫面崩潰
+    if not filtered_stocks:
+        filtered_stocks = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
+else:
+    filtered_stocks = [f"{k} {v}" for k, v in ALL_STOCKS.items()]
+
+# 3. 唯一的、會自動彈出提示的精準搜尋欄
+# 不用按 Enter，手機打字直接即時過濾，且下拉選單只會出現開頭符合的股票！
+selected_stock_str = st.sidebar.selectbox(
     "請輸入股票代碼：",
-    placeholder="輸入代碼即時字首過濾...",
-    key="pure_text_search_widget"
-).strip()
+    options=filtered_stocks,
+    key="pure_selectbox_search"
+)
 
-# 【核心：智慧解析打完字按確認後的切換邏輯】
-if search_query:
-    # 情況 A：如果使用者直接輸入 4 位數完整代碼 (例如 "2330")
-    if search_query in ALL_STOCKS:
-        st.session_state.final_target_code = search_query
-    else:
-        # 情況 B：使用者輸入的是中文 (例如 "台積電"、"聯發科")
-        matched_by_name = [k for k, v in ALL_STOCKS.items() if search_query in v]
-        if matched_by_name:
-            st.session_state.final_target_code = matched_by_name[0]
-        else:
-            # 情況 C：使用者輸入的是字首/部分代碼 (例如 "2"、"22"、"223")
-            # 鋼鐵字首鎖定：強迫只比對代碼的「開頭」，徹底過濾模糊雜魚！
-            matched_by_prefix = [k for k in ALL_STOCKS.keys() if k.startswith(search_query)]
-            if matched_by_prefix:
-                # 預進位到最符合該字首的第一檔股票，讓圖表自動切換，不卡在預設股票
-                st.session_state.final_target_code = matched_by_prefix[0]
+# 4. 解析選中的代碼並傳送給圖表
+if selected_stock_str:
+    final_target_code = selected_stock_str.split(" ")[0]
+    st.session_state.final_target_code = final_target_code
+else:
+    final_target_code = st.session_state.final_target_code
 
-# 真正拿去撈資料的代碼
-final_target_code = st.session_state.final_target_code
 
+# --- 以下為原本的觀測週期與圖表渲染邏輯，保持完全不動 ---
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
@@ -245,7 +250,8 @@ if final_target_code:
     data, final_symbol = fetch_stock_data(final_target_code)
 
     if not data.empty:
-        display_title = get_stock_display_name(final_symbol)
+        pure_code = final_symbol.split('.')[0].strip()
+        display_title = f"{ALL_STOCKS[pure_code]} ({final_symbol})" if pure_code in ALL_STOCKS else final_symbol
         st.subheader(f"📈 {display_title}")
         
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
