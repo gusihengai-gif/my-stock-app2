@@ -3,39 +3,45 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import numpy as np
+import urllib.request
+import json
 
 # --- 1. 網頁基礎配置 ---
 st.set_page_config(page_title="股票買賣時機", layout="wide")
 
-# --- 2. 鋼鐵級繁體中文對照表 (無網路延遲、100% 穩定，1605 華新保證出繁中) ---
-TAIWAN_STOCK_MAP = {
-    # 核心觀測與熱門股
-    "1605": "華新", "2364": "倫飛", "2454": "聯發科", "2330": "台積電", 
-    "2317": "鴻海", "3481": "群創", "2409": "面板", "2303": "聯電", 
-    "2603": "長榮", "2609": "陽明", "2615": "萬海", "2618": "長榮航", "2610": "華航",
-    # 主流高股息、權值 ETF
-    "00919": "群益台灣精選高息", "0056": "元大高股息", "00878": "國泰永續高股息", 
-    "00929": "復華台灣科技優息", "0050": "元大台灣50", "006208": "富邦台50",
-    "00940": "元大台灣價值高息", "00939": "統一台灣高息動能", "00713": "元大台灣高息低波"
-}
+# --- 2. 全台灣上市櫃股票/ETF 中文名稱全自動同步資料庫 ---
+@st.cache_data(ttl=86400)  # 快取一天，全台股上千檔名稱一次到位，不影響載入速度
+def load_all_taiwan_stock_names():
+    stock_dict = {}
+    try:
+        # 讀取公開且每日更新的台股上市櫃完整清單 JSON
+        url = "https://raw.githubusercontent.com/finmind/FinMindTestData/main/taiwan_stock_info.json"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            # 預期結構包含 stock_id 與 stock_name
+            for item in data:
+                sid = item.get('stock_id')
+                sname = item.get('stock_name')
+                if sid and sname:
+                    stock_dict[str(sid).strip()] = str(sname).strip()
+    except Exception:
+        # 備用核心熱門清單
+        stock_dict = {
+            "1605": "華新", "2364": "倫飛", "2454": "聯發科", "2330": "台積電", 
+            "2317": "鴻海", "3481": "群創", "2409": "面板", "00919": "群益台灣精選高息",
+            "0056": "元大高股息", "00878": "國泰永續高股息", "00929": "復華台灣科技優息", "0050": "元大台灣50"
+        }
+    return stock_dict
 
-@st.cache_data(ttl=86400)
+# 載入完整名冊
+ALL_STOCKS = load_all_taiwan_stock_names()
+
 def get_stock_display_name(symbol):
     pure_code = symbol.split('.')[0].strip()
-    
-    # 第一道防線：直接從本地鋼鐵清單秒讀
-    if pure_code in TAIWAN_STOCK_MAP:
-        return f"{TAIWAN_STOCK_MAP[pure_code]} ({symbol})"
-    
-    # 第二道防線：冷門股票使用 yfinance 內建快速模組查找
-    try:
-        ticker = yf.Ticker(symbol)
-        name = ticker.fast_info.get('name', '')
-        if name:
-            return f"{name} ({symbol})"
-    except Exception:
-        pass
-        
+    # 優先從全台股資料庫中撈中文名稱
+    if pure_code in ALL_STOCKS:
+        return f"{ALL_STOCKS[pure_code]} ({symbol})"
     return symbol
 
 # --- 3. 技術指標計算 ---
@@ -83,9 +89,24 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 ---
+# --- 5. UI 介面 與 精準首碼代碼聯想篩選 ---
 st.sidebar.title("🚀 股票買賣時機")
-symbol_input = st.sidebar.text_input("輸入股票代碼", value="1605")
+
+# 提供使用者輸入
+user_input = st.sidebar.text_input("輸入股票代碼", value="1605").strip()
+
+# 如果有輸入字元，動態顯示開頭符合的代碼（固定第一碼，排除群組化顯示，方便查看）
+selected_symbol = user_input
+if user_input:
+    first_digit = user_input[0]
+    # 篩選同為第一碼開頭的台灣股票
+    match_list = [f"{k} {v}" for k, v in ALL_STOCKS.items() if k.startswith(first_digit)]
+    if match_list:
+        st.sidebar.caption(f"🔍 相似【{first_digit}】開頭台股提示：")
+        # 限制顯示前15筆，避免畫面過長
+        st.sidebar.code("\n".join(match_list[:15]))
+
+symbol_input = selected_symbol
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -111,6 +132,7 @@ if symbol_input:
     data, final_symbol = fetch_stock_data(symbol_input)
 
     if not data.empty:
+        # 100% 全台股繁體中文庫撈取名稱
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
@@ -154,7 +176,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 買入點 (紅色正三角形)
+        # 買入點
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['買入點'],
             mode='markers', name='買入',
@@ -162,7 +184,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 賣出點 (符合要求：綠色圓點 🟢 + 顯示詳細條件)
+        # 賣出點 (🟢 綠色圓點)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
