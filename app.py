@@ -183,41 +183,45 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 介面 與 【字首強鎖定】原生免按 Enter 輸入欄 ---
+# --- 5. UI 介面 與 【動態字首鎖定】一體化選單 ---
 st.sidebar.title("🚀 股票買賣時機")
 
-# 用來確保使用者邊打字、畫面邊聯動變更的 Session State
-if "typing_search_keyword" not in st.session_state:
-    st.session_state.typing_search_keyword = "2330"
+# 初始化 Session State 記憶狀態
+if "previous_clean_filter" not in st.session_state:
+    st.session_state.previous_clean_filter = ALL_STOCKS_LIST
 
-# 原生無額外套件輸入框，外觀完全單一化
-user_typed_val = st.sidebar.text_input(
-    "請輸入股票代碼 (打字即自動過濾字首連動)",
-    value=st.session_state.typing_search_keyword,
-    key="raw_text_input_search_widget"
+# 建立一個隱藏的文字輸入框，專門用來捕捉使用者即時敲擊鍵盤的字串（不需要按 Enter）
+user_typing_keyword = st.sidebar.text_input(
+    "請輸入股票代碼進行篩選 (字首強鎖定)",
+    value="",
+    key="realtime_search_keyword_input"
 ).strip()
 
-# 【鋼鐵核心過濾邏輯】強制實施字首對齊，只要不是打的數字開頭，一律從名單抹除！
-filtered_stocks = [
-    f"{k} {v}" for k, v in ALL_STOCKS.items() 
-    if k.startswith(user_typed_val) or v.startswith(user_typed_val)
-]
-
-# 決定最後要畫圖的股票代碼
-if user_typed_val in ALL_STOCKS:
-    final_target_code = user_typed_val
-elif filtered_stocks:
-    # 只要一打字（例如 66），右邊大畫面「不需要按 Enter」就會直接鎖定過濾後的第一檔（例如 6669），達成即時切換！
-    final_target_code = filtered_stocks[0].split(" ")[0]
+# 【鋼鐵核心過濾邏輯】強制實施字首對齊。只要不是使用者打的數字開頭，直接從選單蒸發！
+if user_typing_keyword:
+    dynamic_filtered_options = [
+        f"{k} {v}" for k, v in ALL_STOCKS.items() 
+        if k.startswith(user_typing_keyword) or v.startswith(user_typing_keyword)
+    ]
+    if not dynamic_filtered_options:
+        dynamic_filtered_options = ["❌ 找不到符合字首的股票"]
 else:
-    final_target_code = "2330"
+    # 使用者沒打字時，預設顯示全部股票
+    dynamic_filtered_options = ALL_STOCKS_LIST
 
-# 貼心提示：在輸入框正下方「純淨顯示」目前開頭符合的股票名單，拒絕任何模糊型雜魚跑出來
-if user_typed_val and filtered_stocks:
-    st.sidebar.caption("🎯 目前符合首碼的名單：")
-    # 只顯示前 8 檔最精準的項目，畫面乾淨不雜亂
-    for s in filtered_stocks[:8]:
-        st.sidebar.text(f"• {s}")
+# 丟給原生 selectbox 顯示。此時不論前端怎麼做模糊搜尋，因為名單已經被我們在後台「閹割」過了，
+# 所以絕對不會跑出像 1466、3669 這種首碼不對的雜魚！
+selected_stock_str = st.sidebar.selectbox(
+    "請在下方選單直接點擊切換：",
+    options=dynamic_filtered_options,
+    key="secured_stock_selectbox_widget"
+)
+
+# 解析出最終要畫圖的代碼
+if selected_stock_str and "❌" not in selected_stock_str:
+    final_target_code = selected_stock_str.split(" ")[0]
+else:
+    final_target_code = "2330" # 防呆預設
 
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
@@ -246,7 +250,6 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        # 修正 pd 被覆蓋的問題，改用安全的方式判斷多層欄位
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
