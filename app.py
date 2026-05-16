@@ -30,21 +30,29 @@ def calculate_indicators(df):
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
+    sell_reasons = [""] * len(df) # 記錄賣出時的條件文字
     in_position = False 
     
     for i in range(1, len(df)):
         row = df.iloc[i]
         prev_row = df.iloc[i-1]
         
+        # 買入：MA金叉 + RSI強勢
         if not in_position:
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
+        # 賣出：三重共振同時成立
         elif in_position:
-            if (row['RSI5'] < row['RSI10']) and (row['Close'] < row['MA5']) and (row['K'] < row['D']):
+            cond_rsi = (row['RSI5'] < row['RSI10'])
+            cond_price = (row['Close'] < row['MA5'])
+            cond_kdj = (row['K'] < row['D'])
+            
+            if cond_rsi and cond_price and cond_kdj:
                 sell_markers[i] = row['Close']
+                sell_reasons[i] = "RSI死叉 + KDJ死叉 + 跌破MA5" # 存入文字
                 in_position = False 
-    return buy_markers, sell_markers
+    return buy_markers, sell_markers, sell_reasons
 
 # --- 4. UI 介面 ---
 st.sidebar.title("🚀 股票買賣時機")
@@ -81,7 +89,7 @@ if symbol_input:
         data.columns = [str(c).strip().capitalize() for c in data.columns]
         
         df = calculate_indicators(data)
-        df['買入點'], df['賣出點'] = get_signal_markers(df)
+        df['買入點'], df['賣出點'], df['賣出原因'] = get_signal_markers(df)
         
         view_df = df.tail(st.session_state.view_days).copy()
         view_df['日期顯示'] = view_df.index.strftime('%Y-%m-%d')
@@ -96,13 +104,12 @@ if symbol_input:
             tick_vals = view_df['日期顯示'].tolist()
             tick_texts = view_df['日期顯示'].tolist()
         elif days == 20:
-            tick_vals = view_df['日期顯示'].tolist()[::5] # 每5天
+            tick_vals = view_df['日期顯示'].tolist()[::5]
             tick_texts = view_df['日期顯示'].tolist()[::5]
         elif days == 30:
-            tick_vals = view_df['日期顯示'].tolist()[::10] # 每10天
+            tick_vals = view_df['日期顯示'].tolist()[::10]
             tick_texts = view_df['日期顯示'].tolist()[::10]
-        else: # 60天以上：只顯示每月第一個交易日
-            # 找出每個月分組後的第一個索引
+        else: 
             first_days = view_df.groupby('月份').head(1)
             tick_vals = first_days['日期顯示'].tolist()
             tick_texts = first_days['日期顯示'].tolist()
@@ -117,7 +124,7 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 買賣點
+        # 買入點 (紅色正三角形)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['買入點'],
             mode='markers', name='買入',
@@ -125,14 +132,16 @@ if symbol_input:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
+        # 賣出點 (關鍵修正：改為綠色圓點 'circle'，並加入提示條件)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
-            marker=dict(symbol='triangle-down', size=14, color='#39FF14'),
-            hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
+            marker=dict(symbol='circle', size=14, color='#39FF14'),
+            customdata=view_df['賣出原因'],
+            hovertemplate="日期: %{x}<br>價格: %{y:.2f}<br><b>滿足條件: %{customdata}</b><extra></extra>"
         ))
         
-        # --- 7. 更新佈局 (關鍵修正) ---
+        # --- 7. 更新佈局 ---
         fig.update_layout(
             height=600,
             xaxis_rangeslider_visible=False,
