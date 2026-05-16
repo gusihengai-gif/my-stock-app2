@@ -85,7 +85,7 @@ ALL_STOCKS = {
     "2439": "美律", "2440": "太空梭", "2441": "超豐", "2442": "新美齊", "2443": "新利虹", "2444": "友旺", "2449": "京元電子",
     "2450": "神腦", "2451": "創見", "2453": "凌群", "2454": "聯發科", "2455": "全新", "2456": "奇力新", "2457": "飛宏",
     "2458": "義隆", "2459": "敦吉", "2460": "建通", "2461": "光群雷", "2462": "良得電", "2464": "盟立", "2465": "麗臺",
-    "2466": "冠西電", "2467": "志聖", "2468": "華經", "2471": "資通", "2472": "立隆電", "2474": "可成", "2475": "華映",
+    "2466": "冠西電", "2467": "志盛", "2468": "華經", "2471": "資通", "2472": "立隆電", "2474": "可成", "2475": "華映",
     "2476": "鉅祥", "2477": "華勝", "2478": "大毅", "2480": "敦陽科", "2481": "強茂", "2482": "連宇", "2483": "百容",
     "2484": "希華", "2485": "兆赫", "2486": "一詮", "2488": "漢平", "2489": "瑞軒", "2491": "吉祥全", "2492": "華新科",
     "2493": "揚博", "2495": "普安", "2496": "卓越", "2497": "怡利電", "2498": "宏達電",
@@ -190,7 +190,7 @@ def calculate_indicators(df):
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     return df
 
-# --- 4. 核心買賣訊號邏輯 (賣出需「同時成立」) ---
+# --- 4. 核心買賣訊號邏輯 ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
@@ -202,7 +202,6 @@ def get_signal_markers(df):
         prev_row = df.iloc[i-1]
         
         if not in_position:
-            # 買入訊號：MA黃金交叉 且 RSI5 > 50
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
@@ -217,37 +216,49 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. UI 側邊欄：單一搜尋欄 (手機免按Enter即時動態對齊 + 鋼鐵字首鎖定) ---
+# --- 5. UI 側邊欄：單一搜尋欄 ---
 st.sidebar.title("🚀 股票買賣時機")
 
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 使用單一的原生 selectbox 打造搜尋欄
 selected_stock_str = st.sidebar.selectbox(
     "請輸入或選擇股票代碼：",
     options=ALL_STOCKS_LIST,
     index=list(sorted(ALL_STOCKS.keys())).index(st.session_state.final_target_code) if st.session_state.final_target_code in ALL_STOCKS else 0
 )
 
-# 手機打字或點選後，即時擷取前方的純代號，免按 Enter
 if selected_stock_str:
     st.session_state.final_target_code = selected_stock_str.split(" ")[0].strip()
 
 final_target_code = st.session_state.final_target_code
 
-# --- 6. 主畫面：觀測週期與圖表渲染 ---
+# --- 6. 主畫面：觀測週期（優化為 2 排按鈕，完美適應手機） ---
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
 st.write("### 觀測週期選擇")
-p_cols = st.columns(6)
-periods = {"10天": 10, "20天": 20, "30天": 30, "60天": 60, "120天": 120, "240天": 240}
-for i, (lab, val) in enumerate(periods.items()):
-    if p_cols[i].button(lab):
-        st.session_state.view_days = val
 
-# 資料抓取快取
+# 第一排按鈕 (10天、20天、30天)
+row1_cols = st.columns(3)
+if row1_cols[0].button("10天", use_container_width=True):
+    st.session_state.view_days = 10
+if row1_cols[1].button("20天", use_container_width=True):
+    st.session_state.view_days = 20
+if row1_cols[2].button("30天", use_container_width=True):
+    st.session_state.view_days = 30
+
+# 第二排按鈕 (60天、120天、240天)
+row2_cols = st.columns(3)
+if row2_cols[0].button("60天", use_container_width=True):
+    st.session_state.view_days = 60
+if row2_cols[1].button("120天", use_container_width=True):
+    st.session_state.view_days = 120
+if row2_cols[2].button("240天", use_container_width=True):
+    st.session_state.view_days = 240
+
+
+# 資料抓取與圖表渲染
 @st.cache_data(ttl=3600)
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
@@ -321,7 +332,7 @@ if final_target_code:
         ))
         
         fig.update_layout(
-            height=600,
+            height=500,
             xaxis_rangeslider_visible=False,
             hovermode='closest',
             xaxis=dict(
