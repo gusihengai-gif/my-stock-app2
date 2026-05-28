@@ -96,7 +96,46 @@ def get_stock_display_name(symbol):
         return f"{ALL_STOCKS[pure_code]} ({symbol})"
     return symbol
 
-# --- 3. 技術指標計算 ---
+# --- 3. 網頁端即時價格破防函數 (繞過 yfinance 的快取缺陷) ---
+def fetch_absolute_live_price(symbol):
+    """直接呼叫 Yahoo Web API 抓取未經快取污染的當日實體收盤價/即時價"""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            json_data = res.json()
+            result = json_data['chart']['result'][0]
+            indicators = result['indicators']['quote'][0]
+            
+            # 優先提取 close 陣列的最後一個元素
+            close_val = indicators['close'][-1] if 'close' in indicators and indicators['close'] else None
+            open_val = indicators['open'][-1] if 'open' in indicators and indicators['open'] else None
+            high_val = indicators['high'][-1] if 'high' in indicators and indicators['high'] else None
+            low_val = indicators['low'][-1] if 'low' in indicators and indicators['low'] else None
+            
+            # 如果 close 是空值，嘗試拿常規即時價格 (meta 欄位) 頂替
+            if close_val is None or pd.isna(close_val):
+                meta = result.get('meta', {})
+                close_val = meta.get('regularMarketPrice', None)
+                open_val = meta.get('regularMarketPrice', None)
+                high_val = meta.get('regularMarketPrice', None)
+                low_val = meta.get('regularMarketPrice', None)
+                
+            if close_val is not None:
+                return {
+                    'Open': float(open_val),
+                    'High': float(high_val),
+                    'Low': float(low_val),
+                    'Close': float(close_val)
+                }
+    except Exception:
+        pass
+    return None
+
+# --- 4. 技術指標計算 ---
 def calculate_indicators(df):
     df = df.copy()
     
@@ -123,11 +162,10 @@ def calculate_indicators(df):
     df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     
-    # 指標邊際空值全面填充
     df = df.bfill().ffill()
     return df
 
-# --- 4. 核心買賣訊號邏輯（三重共振） ---
+# --- 5. 核心買賣訊號邏輯 ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
@@ -156,7 +194,7 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. 主畫面：股票搜尋與選擇欄 ---
+# --- 6. 主畫面：股票搜尋與選擇欄 ---
 st.title("📊 台灣股市即時決策儀表板")
 
 if "final_target_code" not in st.session_state:
@@ -179,7 +217,7 @@ if selected_stock_str:
 
 final_target_code = st.session_state.final_target_code
 
-# --- 6. 觀測週期選擇區塊 ---
+# --- 7. 觀測週期選擇區塊 ---
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
@@ -201,7 +239,7 @@ if row2_cols[1].button("120天", use_container_width=True):
 if row2_cols[2].button("240天", use_container_width=True):
     st.session_state.view_days = 240
 
-# --- 7. 資料抓取與圖表渲染 ---
+# --- 8. 資料抓取與圖表渲染 ---
 @st.cache_data(ttl=10)
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
@@ -231,42 +269,37 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        # 移除時間戳的時區
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
         
-        # 轉換數值型態
         for col in ['Open', 'High', 'Low', 'Close']:
             data[col] = pd.to_numeric(data[col], errors='coerce')
         
-        # 【最核心對齊機制】轉換為無時區的格式化字串
+        # 轉換為標準日期字串
         data.index = data.index.strftime('%Y-%m-%d')
         
-        # 🔥【終極即時價 T+0 覆蓋補丁】🔥
-        if len(data) >= 1:
-            # 如果最後一天的收盤價是空值，或者今天剛收盤、歷史日K線資料還沒同步進 yfinance
-            if pd.isna(data['Close'].iloc[-1]) or datetime.now().strftime('%Y-%m-%d') == data.index[-1]:
-                try:
-                    # 建立即時 Ticker 請求
-                    ticker_obj = yf.Ticker(final_symbol)
-                    # 抓取最新的 1 天即時日K資料 (包含盤中/剛收盤即時資料)
-                    live_data = ticker_obj.history(period="1d")
-                    if not live_data.empty:
-                        live_close = float(live_data['Close'].iloc[-1])
-                        live_open = float(live_data['Open'].iloc[-1])
-                        live_high = float(live_data['High'].iloc[-1])
-                        live_low = float(live_data['Low'].iloc[-1])
-                        
-                        # 只有在抓到的即時價不是空值且有效的情況下才進行強制覆蓋
-                        if not pd.isna(live_close) and live_close > 0:
-                            data['Close'].iloc[-1] = live_close
-                            data['Open'].iloc[-1] = live_open
-                            data['High'].iloc[-1] = live_high
-                            data['Low'].iloc[-1] = live_low
-                except Exception as e:
-                    pass
-        
-        # 雙重兜底安全防禦：如果連即時 API 都沒反應，才萬不得已複製前一天
+        # 🔥【超強效強制覆蓋機制】🔥
+        # 不論 yfinance 回傳什麼，我們都主動去網頁端抓取今天雷打不動的實體最新收盤價
+        live_info = fetch_absolute_live_price(final_symbol)
+        if live_info:
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            
+            # 如果 yfinance 的最後一行不是今天，強行幫它新增一列今天的日期格子
+            if data.index[-1] != today_str:
+                new_row = pd.DataFrame(
+                    [[live_info['Open'], live_info['High'], live_info['Low'], live_info['Close']]], 
+                    columns=['Open', 'High', 'Low', 'Close'], 
+                    index=[today_str]
+                )
+                data = pd.concat([data, new_row])
+            else:
+                # 如果 yfinance 已經有今天的格子（但數值錯誤或為 NaN），直接全面暴力覆盖
+                data['Close'].iloc[-1] = live_info['Close']
+                data['Open'].iloc[-1] = live_info['Open']
+                data['High'].iloc[-1] = live_info['High']
+                data['Low'].iloc[-1] = live_info['Low']
+
+        # 最終防線：若真的連網頁端都完全斷網，才複製前一日
         if len(data) >= 2:
             for col in ['Open', 'High', 'Low', 'Close']:
                 if pd.isna(data[col].iloc[-1]):
@@ -277,8 +310,6 @@ if final_target_code:
         
         view_df = df.tail(st.session_state.view_days).copy()
         view_df['日期顯示'] = view_df.index
-        
-        # 提取月份用於計算大週期的刻度分佈
         view_df['月份'] = pd.to_datetime(view_df['日期顯示']).dt.strftime('%Y-%m')
 
         # 計算 X 軸刻度
