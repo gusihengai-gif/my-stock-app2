@@ -96,10 +96,13 @@ def get_stock_display_name(symbol):
         return f"{ALL_STOCKS[pure_code]} ({symbol})"
     return symbol
 
-# --- 3. 網頁端即時價格破防函數 (繞過 yfinance 的快取缺陷) ---
+# --- 3. 台灣官方即時盤後 API 破防函數 (完全跳脫 yfinance 架構缺陷) ---
 def fetch_absolute_live_price(symbol):
-    """直接呼叫 Yahoo Web API 抓取未經快取污染的當日實體收盤價/即時價"""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d"
+    """直接從台灣市場前端公開核心源抓取當日最真實、無快取延遲的收盤價"""
+    pure_code = symbol.split('.')[0].strip()
+    
+    # 方案 A：直接呼叫台灣證券交易所/富果開放個股精確即時行情
+    url = f"https://api.fugle.tw/marketdata/v0.3/candles?symbolId={pure_code}&timeframe=D&size=1"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -107,30 +110,38 @@ def fetch_absolute_live_price(symbol):
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             json_data = res.json()
-            result = json_data['chart']['result'][0]
-            indicators = result['indicators']['quote'][0]
-            
-            # 優先提取 close 陣列的最後一個元素
-            close_val = indicators['close'][-1] if 'close' in indicators and indicators['close'] else None
-            open_val = indicators['open'][-1] if 'open' in indicators and indicators['open'] else None
-            high_val = indicators['high'][-1] if 'high' in indicators and indicators['high'] else None
-            low_val = indicators['low'][-1] if 'low' in indicators and indicators['low'] else None
-            
-            # 如果 close 是空值，嘗試拿常規即時價格 (meta 欄位) 頂替
-            if close_val is None or pd.isna(close_val):
-                meta = result.get('meta', {})
-                close_val = meta.get('regularMarketPrice', None)
-                open_val = meta.get('regularMarketPrice', None)
-                high_val = meta.get('regularMarketPrice', None)
-                low_val = meta.get('regularMarketPrice', None)
-                
-            if close_val is not None:
+            if 'candles' in json_data and json_data['candles']:
+                latest_candle = json_data['candles'][0]
                 return {
-                    'Open': float(open_val),
-                    'High': float(high_val),
-                    'Low': float(low_val),
-                    'Close': float(close_val)
+                    'Open': float(latest_candle['open']),
+                    'High': float(latest_candle['high']),
+                    'Low': float(latest_candle['low']),
+                    'Close': float(latest_candle['close'])
                 }
+    except Exception:
+        pass
+        
+    # 方案 B：如果開放渠道受阻，直接調用 Yahoo 奇摩股市前端的即時看板 API
+    yahoo_web_url = f"https://tw.quote.finance.yahoo.net/quote/q?type=ta&perd=d&mkt=10&sym={pure_code}"
+    try:
+        res = requests.get(yahoo_web_url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            # 奇摩股市回傳的是 jsonp 格式，精準切出裡面的 JSON
+            text_data = res.text
+            start_idx = text_data.find('(')
+            end_idx = text_data.rfind(')')
+            if start_idx != -1 and end_idx != -1:
+                json_str = text_data[start_idx+1:end_idx]
+                import json
+                data_dict = json.loads(json_str)
+                if 'ta' in data_dict and data_dict['ta']:
+                    latest_ta = data_dict['ta'][-1] # 最後一筆交易日
+                    return {
+                        'Open': float(latest_ta['o']),
+                        'High': float(latest_ta['h']),
+                        'Low': float(latest_ta['l']),
+                        'Close': float(latest_ta['c'])
+                    }
     except Exception:
         pass
     return None
@@ -275,16 +286,16 @@ if final_target_code:
         for col in ['Open', 'High', 'Low', 'Close']:
             data[col] = pd.to_numeric(data[col], errors='coerce')
         
-        # 轉換為標準日期字串
+        # 轉換為標準日期字串格式
         data.index = data.index.strftime('%Y-%m-%d')
         
-        # 🔥【超強效強制覆蓋機制】🔥
-        # 不論 yfinance 回傳什麼，我們都主動去網頁端抓取今天雷打不動的實體最新收盤價
+        # 🔥【官方實價核心覆蓋補丁】🔥
+        # 直接使用本地第一手渠道抓取雷打不動的收盤價
         live_info = fetch_absolute_live_price(final_symbol)
         if live_info:
             today_str = datetime.now().strftime('%Y-%m-%d')
             
-            # 如果 yfinance 的最後一行不是今天，強行幫它新增一列今天的日期格子
+            # 若 yfinance 完全漏抓最新一交易日，強制在底層 DataFrame 塞入一列新格子
             if data.index[-1] != today_str:
                 new_row = pd.DataFrame(
                     [[live_info['Open'], live_info['High'], live_info['Low'], live_info['Close']]], 
@@ -293,13 +304,13 @@ if final_target_code:
                 )
                 data = pd.concat([data, new_row])
             else:
-                # 如果 yfinance 已經有今天的格子（但數值錯誤或為 NaN），直接全面暴力覆盖
+                # 若 yfinance 的最後一列是今天，但數值因為快取而出錯，強制全面以實價取代
                 data['Close'].iloc[-1] = live_info['Close']
                 data['Open'].iloc[-1] = live_info['Open']
                 data['High'].iloc[-1] = live_info['High']
                 data['Low'].iloc[-1] = live_info['Low']
 
-        # 最終防線：若真的連網頁端都完全斷網，才複製前一日
+        # 最終防死鎖防線：如果完全沒有任何外部網路回應，才安全複製前一日
         if len(data) >= 2:
             for col in ['Open', 'High', 'Low', 'Close']:
                 if pd.isna(data[col].iloc[-1]):
