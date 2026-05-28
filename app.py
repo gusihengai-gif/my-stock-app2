@@ -18,8 +18,8 @@ hide_menu_style = """
         """
 st.markdown(hide_menu_style, unsafe_allow_html=True)
 
-# --- 2. 動態抓取最新台股上市櫃與主要 ETF 資料庫（防權證與雜訊） ---
-@st.cache_data(ttl=86400)  # 快取 24 小時，避免重複下載卡頓
+# --- 2. 動態抓取最新台股上市櫃與主要 ETF 資料庫 ---
+@st.cache_data(ttl=86400)  # 快取 24 小時
 def fetch_taiwan_stocks():
     urls = {
         "上市": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
@@ -47,6 +47,7 @@ def fetch_taiwan_stocks():
             for _, row in df.iterrows():
                 text = str(row['有價證券代號及名稱']).strip()
                 
+                # 判斷是否進入股票或受益憑證區段
                 if "股 票" in text or "股票" in text or "受益憑證" in text:
                     is_valid_section = True
                     continue
@@ -56,22 +57,27 @@ def fetch_taiwan_stocks():
                 
                 if is_valid_section and "　" in text:
                     parts = text.split("　")
-                    stock_id = parts[0].strip()
+                    stock_id = parts[0].strip()  # 徹底清除前後空格
                     stock_name = parts[1].strip()
                     
-                    if stock_id.isdigit():
-                        is_normal_stock = (len(stock_id) == 4)
-                        is_etf = (len(stock_id) in [5, 6] and stock_id.startswith("00"))
-                        
-                        if is_normal_stock or is_etf:
-                            if "特" not in stock_name and "債" not in stock_name:
-                                stock_list.append({"id": stock_id, "name": stock_name})
+                    # 條件一：剛好 4 碼純數字（一般個股）
+                    is_normal_stock = (len(stock_id) == 4 and stock_id.isdigit())
+                    
+                    # 條件二：5 或 6 碼，且必須是 00 開頭（精準保留各類 ETF，允許帶英文後綴）
+                    is_etf = (len(stock_id) in [5, 6] and stock_id.startswith("00"))
+                    
+                    if is_normal_stock or is_etf:
+                        if "特" not in stock_name and "債" not in stock_name:
+                            stock_list.append({"id": stock_id, "name": stock_name})
         except Exception as e:
             st.error(f"無法從 {market_type} 網址獲取資料: {e}")
             
-    return sorted(stock_list, key=lambda x: x['id'])
+    # 去除可能重複的代碼並排序
+    unique_stocks = {item['id']: item['name'] for item in stock_list}
+    sorted_list = [{"id": k, "name": v} for k, v in sorted(unique_stocks.items())]
+    return sorted_list
 
-# 載入資料並轉換為對照結構
+# 載入資料
 with st.spinner("正在即時同步最新台股與 ETF 清單..."):
     ALL_STOCKS_DATA = fetch_taiwan_stocks()
 
@@ -115,12 +121,10 @@ def get_signal_markers(df):
         prev_row = df.iloc[i-1]
         
         if not in_position:
-            # 買入：均線黃金交叉 + RSI5 > 50
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
         elif in_position:
-            # 賣出：RSI死叉 + KDJ死叉 + 跌破MA5
             cond_rsi = (row['RSI5'] < row['RSI10'])
             cond_price = (row['Close'] < row['MA5'])
             cond_kdj = (row['K'] < row['D'])
@@ -131,16 +135,18 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. 主畫面：股票搜尋與選擇欄（置頂防手機版折疊） ---
+# --- 5. 主畫面：股票搜尋與選擇欄 ---
 st.title("🚀 股票買賣時機觀測")
 
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 確保預設的 2330 有在抓到的選單裡，如果沒有就選第一個
+# 安全尋找預設值索引，防呆機制
 default_index = 0
-if "2330 台積電" in ALL_STOCKS_LIST:
-    default_index = ALL_STOCKS_LIST.index("2330 台積電")
+for idx, item in enumerate(ALL_STOCKS_LIST):
+    if item.startswith("2330"):
+        default_index = idx
+        break
 
 selected_stock_str = st.selectbox(
     "請輸入或選擇股票代碼：",
@@ -192,7 +198,6 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        # 修正 yfinance 的多重索引欄位問題
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
@@ -224,7 +229,6 @@ if final_target_code:
 
         fig = go.Figure()
         
-        # 繪製實價線
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines', name='實價',
@@ -232,7 +236,6 @@ if final_target_code:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 標註買入點
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['買入點'],
             mode='markers', name='買入',
@@ -240,7 +243,6 @@ if final_target_code:
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
-        # 標註賣出點
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['賣出點'],
             mode='markers', name='賣出',
