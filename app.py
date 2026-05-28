@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import requests
+import io
 
 # --- 1. 全域網頁設定 ---
 st.set_page_config(page_title="台股買賣時機觀測", layout="wide")
@@ -27,17 +28,23 @@ def fetch_taiwan_stocks():
     }
     
     stock_list = []
+    # 偽裝成真人 Chrome 瀏覽器
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
     }
     
     for market_type, url in urls.items():
         try:
-            response = requests.get(url, headers=headers)
-            response.encoding = 'ms950'
+            # 安全破防 403：先用 requests 把網頁文字下載下來
+            response = requests.get(url, headers=headers, timeout=10)
+            response.encoding = 'ms950'  # 修正台股網頁萬年 CP950 編碼問題
             
-            # 解析網頁內所有的表格
-            dfs = pd.read_html(response.text)
+            # 將下載下來的網頁純文字，包裝成記憶體緩衝流（StringIO）餵給 pandas
+            # 這樣 pandas 就不會直接去撞證交所牆壁，完美破解 403 Forbidden
+            html_data = io.StringIO(response.text)
+            dfs = pd.read_html(html_data)
             
             target_df = None
             # 遍歷所有表格，尋找真正含有股票資料的表格
@@ -68,7 +75,7 @@ def fetch_taiwan_stocks():
                 
                 if is_valid_section and "　" in text:
                     parts = text.split("　")
-                    stock_id = parts[0].strip()  # 徹底清除前後空格
+                    stock_id = parts[0].strip()
                     stock_name = parts[1].strip()
                     
                     # 條件一：剛好 4 碼純數字（一般個股）
