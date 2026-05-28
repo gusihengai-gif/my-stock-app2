@@ -19,8 +19,8 @@ hide_menu_style = """
         """
 st.markdown(hide_menu_style, unsafe_allow_html=True)
 
-# --- 2. 動態抓取最新台股上市櫃與主要 ETF 資料庫 (拋棄 lxml 改用 BeautifulSoup) ---
-@st.cache_data(ttl=86400)  # 股票清單一天更新一次即可
+# --- 2. 動態抓取最新台股上市櫃與主要 ETF 資料庫 ---
+@st.cache_data(ttl=86400)
 def fetch_taiwan_stocks():
     urls = {
         "上市": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
@@ -37,20 +37,18 @@ def fetch_taiwan_stocks():
             response = requests.get(url, headers=headers, timeout=10)
             response.encoding = 'ms950'
             
-            # 使用內建的 html.parser 替代 lxml，徹底解決套件遺失問題
             soup = BeautifulSoup(response.text, 'html.parser')
-            table = soup.find('table', {'class': ' there is no class, look for rows '}) 
-            if not table:
-                tables = soup.find_all('table')
-                for t in tables:
-                    if '有價證券代號及名稱' in t.text:
-                        table = t
-                        break
+            table = soup.find('table')
+            tables = soup.find_all('table')
+            for t in tables:
+                if '有價證券代號及名稱' in t.text:
+                    table = t
+                    break
             
             if table:
                 rows = table.find_all('tr')
                 is_valid_section = False
-                for row in rows[1:]:  # 跳過標題列
+                for row in rows[1:]:
                     cols = row.find_all('td')
                     if not cols:
                         continue
@@ -85,9 +83,8 @@ def fetch_taiwan_stocks():
 with st.spinner("正在即時同步最新台股與 ETF 清單..."):
     ALL_STOCKS_DATA = fetch_taiwan_stocks()
 
-# 防呆機制：若證交所網頁抓取失敗，提供基本熱門股避免選單掛掉
 if not ALL_STOCKS_DATA:
-    ALL_STOCKS_DATA = [{"id": "2330", "name": "台積電"}, {"id": "2317", "name": "鴻海"}, {"id": "2454", "name": "聯發科"}]
+    ALL_STOCKS_DATA = [{"id": "2330", "name": "台積電"}, {"id": "2317", "name": "鴻海"}]
 
 ALL_STOCKS = {item['id']: item['name'] for item in ALL_STOCKS_DATA}
 ALL_STOCKS_LIST = [f"{item['id']} {item['name']}" for item in ALL_STOCKS_DATA]
@@ -103,8 +100,8 @@ def calculate_indicators(df):
     df = df.copy()
     
     # 計算均線
-    df['MA5'] = df['Close'].rolling(window=5).mean().bfill().ffill()
-    df['MA10'] = df['Close'].rolling(window=10).mean().bfill().ffill()
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA10'] = df['Close'].rolling(window=10).mean()
     
     # 計算 RSI
     delta = df['Close'].diff()
@@ -112,19 +109,21 @@ def calculate_indicators(df):
     loss = -delta.where(delta < 0, 0)
     roll_gain = gain.rolling(5).mean()
     roll_loss = loss.rolling(5).mean()
-    df['RSI5'] = (100 - (100 / (1 + (roll_gain / roll_loss.replace(0, np.nan))))).bfill().ffill()
+    df['RSI5'] = (100 - (100 / (1 + (roll_gain / roll_loss.replace(0, np.nan)))))
     
     roll_gain10 = gain.rolling(10).mean()
     roll_loss10 = loss.rolling(10).mean()
-    df['RSI10'] = (100 - (100 / (1 + (roll_gain10 / roll_loss10.replace(0, np.nan))))).bfill().ffill()
+    df['RSI10'] = (100 - (100 / (1 + (roll_gain10 / roll_loss10.replace(0, np.nan)))))
     
     # 計算 KDJ
     low_min = df['Low'].rolling(window=9).min()
     high_max = df['High'].rolling(window=9).max()
     rsv = (df['Close'] - low_min) / (high_max - low_min).replace(0, np.nan) * 100
-    df['K'] = rsv.ewm(com=2, adjust=False).mean().bfill().ffill()
-    df['D'] = df['K'].ewm(com=2, adjust=False).mean().bfill().ffill()
+    df['K'] = rsv.ewm(com=2, adjust=False).mean()
+    df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     
+    # 在計算完所有技術指標後，針對 DataFrame 的空值進行安全向前與向後填充，確保最新一天絕對有數據
+    df = df.bfill().ffill()
     return df
 
 # --- 4. 核心買賣訊號邏輯（三重共振） ---
@@ -214,12 +213,10 @@ def fetch_stock_data(symbol):
     if raw_data.empty:
         return pd.DataFrame(), target_sym
 
-    # 【核心索引清洗防線】相容新舊版 yfinance，精準提取真實價格
     clean_df = pd.DataFrame(index=raw_data.index)
     
     for col in ['Open', 'High', 'Low', 'Close']:
         if isinstance(raw_data.columns, pd.MultiIndex):
-            # 如果是雙層索引，精準取出對應型態的第一層欄位
             clean_df[col] = raw_data.xs(col, axis=1, level=0).iloc[:, 0]
         else:
             clean_df[col] = raw_data[col]
@@ -233,15 +230,18 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        # 移除時區
+        # 移除時間戳的時區
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
         
-        # 轉為純數值型態
+        # 轉換數值型態
         for col in ['Open', 'High', 'Low', 'Close']:
             data[col] = pd.to_numeric(data[col], errors='coerce')
         
-        # 【最新交易日安全補丁】解決盤後時差導致最新一天 Close 是 NaN 的問題
+        # 【最核心對齊機制修復】在進入任何圖表操作前，直接將 Index 轉換成最純粹無時區、統一格式的日期字串
+        data.index = data.index.strftime('%Y-%m-%d')
+        
+        # 如果最後交易日數值缺漏，優先用前一日收盤價強制補齊實價
         if len(data) >= 2:
             for col in ['Open', 'High', 'Low', 'Close']:
                 if pd.isna(data[col].iloc[-1]):
@@ -251,8 +251,10 @@ if final_target_code:
         df['買入點'], df['賣出點'], df['賣出原因'] = get_signal_markers(df)
         
         view_df = df.tail(st.session_state.view_days).copy()
-        view_df['日期顯示'] = view_df.index.strftime('%Y-%m-%d')
-        view_df['月份'] = view_df.index.strftime('%Y-%m')
+        view_df['日期顯示'] = view_df.index  # 此時 Index 已經是標準的字串陣列
+        
+        # 提取月份用於計算大週期的刻度分佈
+        view_df['月份'] = pd.to_datetime(view_df['日期顯示']).dt.strftime('%Y-%m')
 
         # 計算 X 軸刻度
         all_dates = view_df['日期顯示'].tolist()
@@ -272,13 +274,14 @@ if final_target_code:
             tick_vals = first_days['日期顯示'].tolist()
             tick_texts = first_days['日期顯示'].tolist()
 
+        # 雙重防線：確保最後一天的日期標籤百分之百被加入到刻度中
         if all_dates and (all_dates[-1] not in tick_vals):
             tick_vals.append(all_dates[-1])
             tick_texts.append(all_dates[-1])
 
         fig = go.Figure()
         
-        # 繪製真實收盤價實價線
+        # 繪製實價線 (此時 X 軸陣列與 y 軸陣列元素完全標準化對齊)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines+markers', name='實價',
