@@ -29,7 +29,7 @@ def fetch_taiwan_stocks():
     
     stock_list = []
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Scientific Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
     }
@@ -97,37 +97,37 @@ def get_stock_display_name(symbol):
         return f"{ALL_STOCKS[pure_code]} ({symbol})"
     return symbol
 
-# --- 3. 技術指標計算 (優化防斷線機制) ---
+# --- 3. 技術指標計算 (徹底分離真實收盤價，僅對指標填補) ---
 def calculate_indicators(df):
-    df = df.copy()
-    # 確保主要欄位轉換為浮點數
-    for col in ['Open', 'High', 'Low', 'Close']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-    df['MA5'] = df['Close'].rolling(window=5).mean()
-    df['MA10'] = df['Close'].rolling(window=10).mean()
+    # 建立新 DataFrame 專門計算指標，完全不破壞最原始的 df['Close']
+    calc_df = pd.DataFrame(index=df.index)
+    calc_df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
+    calc_df['High'] = pd.to_numeric(df['High'], errors='coerce')
+    calc_df['Low'] = pd.to_numeric(df['Low'], errors='coerce')
     
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0))
-    loss = (-delta.where(delta < 0, 0))
+    # 計算均線
+    df['MA5'] = calc_df['Close'].rolling(window=5).mean().bfill().ffill()
+    df['MA10'] = calc_df['Close'].rolling(window=10).mean().bfill().ffill()
     
-    # 避免分母為 0
+    # 計算 RSI
+    delta = calc_df['Close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
     roll_gain = gain.rolling(5).mean()
     roll_loss = loss.rolling(5).mean()
-    df['RSI5'] = 100 - (100 / (1 + (roll_gain / roll_loss.replace(0, np.nan))))
+    df['RSI5'] = (100 - (100 / (1 + (roll_gain / roll_loss.replace(0, np.nan))))).bfill().ffill()
     
     roll_gain10 = gain.rolling(10).mean()
     roll_loss10 = loss.rolling(10).mean()
-    df['RSI10'] = 100 - (100 / (1 + (roll_gain10 / roll_loss10.replace(0, np.nan))))
+    df['RSI10'] = (100 - (100 / (1 + (roll_gain10 / roll_loss10.replace(0, np.nan))))).bfill().ffill()
     
-    low_min = df['Low'].rolling(window=9).min()
-    high_max = df['High'].rolling(window=9).max()
-    rsv = (df['Close'] - low_min) / (high_max - low_min).replace(0, np.nan) * 100
-    df['K'] = rsv.ewm(com=2, adjust=False).mean()
-    df['D'] = df['K'].ewm(com=2, adjust=False).mean()
+    # 計算 KDJ
+    low_min = calc_df['Low'].rolling(window=9).min()
+    high_max = calc_df['High'].rolling(window=9).max()
+    rsv = (calc_df['Close'] - low_min) / (high_max - low_min).replace(0, np.nan) * 100
+    df['K'] = rsv.ewm(com=2, adjust=False).mean().bfill().ffill()
+    df['D'] = df['K'].ewm(com=2, adjust=False).mean().bfill().ffill()
     
-    # 【核心優化】向後填充空值，防止最新一天的技術指標未產出導致 Plotly 繪圖斷線
-    df = df.bfill().ffill()
     return df
 
 # --- 4. 核心買賣訊號邏輯（三重共振） ---
@@ -141,7 +141,6 @@ def get_signal_markers(df):
         row = df.iloc[i]
         prev_row = df.iloc[i-1]
         
-        # 防止遇到邊緣 NaN 報錯
         if pd.isna(row['MA5']) or pd.isna(row['MA10']):
             continue
             
@@ -222,14 +221,17 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        # 攤平多重索引
+        # 精準處理 yfinance 欄位
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
         
-        # 移除時區干擾
+        # 移除時區
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
+            
+        # 確保 Close 欄位是純淨的數字型態，絕對不進行任何前向/後向覆蓋
+        data['Close'] = pd.to_numeric(data['Close'], errors='coerce')
         
         df = calculate_indicators(data)
         df['買入點'], df['賣出點'], df['賣出原因'] = get_signal_markers(df)
@@ -256,19 +258,19 @@ if final_target_code:
             tick_vals = first_days['日期顯示'].tolist()
             tick_texts = first_days['日期顯示'].tolist()
 
-        # 強制加入最後一天日期標籤
         if all_dates and (all_dates[-1] not in tick_vals):
             tick_vals.append(all_dates[-1])
             tick_texts.append(all_dates[-1])
 
         fig = go.Figure()
         
-        # 繪製實價線 (對應確保完全填滿的 Close 欄位)
+        # 繪製實價線 (真實市場數值)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
-            mode='lines', name='實價',
+            mode='lines+markers', name='實價',  # 增加 markers 點，方便看清最新一天的精準價位
             line=dict(color='#FFFFFF', width=2),
-            connectgaps=True,  # 【加強防線】強制 Plotly 連接任何可能的微小間隙
+            marker=dict(size=4),
+            connectgaps=True,
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
