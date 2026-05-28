@@ -97,20 +97,26 @@ def get_stock_display_name(symbol):
         return f"{ALL_STOCKS[pure_code]} ({symbol})"
     return symbol
 
-# --- 3. 技術指標計算 (徹底分離真實收盤價，僅對指標填補) ---
+# --- 3. 技術指標計算 (加入最新一筆資料的防缺漏安全機制) ---
 def calculate_indicators(df):
-    # 建立新 DataFrame 專門計算指標，完全不破壞最原始的 df['Close']
-    calc_df = pd.DataFrame(index=df.index)
-    calc_df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
-    calc_df['High'] = pd.to_numeric(df['High'], errors='coerce')
-    calc_df['Low'] = pd.to_numeric(df['Low'], errors='coerce')
+    df = df.copy()
     
+    # 確保主要欄位轉換為浮點數
+    for col in ['Open', 'High', 'Low', 'Close']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # 【關鍵修復防線】如果最新一天的收盤價因為時區更新延遲變成 NaN，強制用前一天的價格做安全填充
+    if len(df) >= 2:
+        for col in ['Open', 'High', 'Low', 'Close']:
+            if pd.isna(df[col].iloc[-1]):
+                df[col].iloc[-1] = df[col].iloc[-2]
+                
     # 計算均線
-    df['MA5'] = calc_df['Close'].rolling(window=5).mean().bfill().ffill()
-    df['MA10'] = calc_df['Close'].rolling(window=10).mean().bfill().ffill()
+    df['MA5'] = df['Close'].rolling(window=5).mean().bfill().ffill()
+    df['MA10'] = df['Close'].rolling(window=10).mean().bfill().ffill()
     
     # 計算 RSI
-    delta = calc_df['Close'].diff()
+    delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     roll_gain = gain.rolling(5).mean()
@@ -122,9 +128,9 @@ def calculate_indicators(df):
     df['RSI10'] = (100 - (100 / (1 + (roll_gain10 / roll_loss10.replace(0, np.nan))))).bfill().ffill()
     
     # 計算 KDJ
-    low_min = calc_df['Low'].rolling(window=9).min()
-    high_max = calc_df['High'].rolling(window=9).max()
-    rsv = (calc_df['Close'] - low_min) / (high_max - low_min).replace(0, np.nan) * 100
+    low_min = df['Low'].rolling(window=9).min()
+    high_max = df['High'].rolling(window=9).max()
+    rsv = (df['Close'] - low_min) / (high_max - low_min).replace(0, np.nan) * 100
     df['K'] = rsv.ewm(com=2, adjust=False).mean().bfill().ffill()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean().bfill().ffill()
     
@@ -208,10 +214,24 @@ if row2_cols[2].button("240天", use_container_width=True):
 @st.cache_data(ttl=10)  # 即時報價快取 10 秒
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
-    data = yf.download(target_sym, period="2y", auto_adjust=False)
+    
+    data = yf.download(
+        target_sym, 
+        period="2y", 
+        auto_adjust=False, 
+        group_by='ticker', 
+        keep_multiindex=False
+    )
+    
     if data.empty and ".TW" in target_sym:
         target_sym = target_sym.replace(".TW", ".TWO")
-        data = yf.download(target_sym, period="2y", auto_adjust=False)
+        data = yf.download(
+            target_sym, 
+            period="2y", 
+            auto_adjust=False, 
+            group_by='ticker', 
+            keep_multiindex=False
+        )
     return data, target_sym
 
 if final_target_code:
@@ -221,17 +241,12 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
-        # 精準處理 yfinance 欄位
-        if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
-            data.columns = data.columns.get_level_values(0)
+        # 標準化欄位名稱字串
         data.columns = [str(c).strip().capitalize() for c in data.columns]
         
         # 移除時區
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
-            
-        # 確保 Close 欄位是純淨的數字型態，絕對不進行任何前向/後向覆蓋
-        data['Close'] = pd.to_numeric(data['Close'], errors='coerce')
         
         df = calculate_indicators(data)
         df['買入點'], df['賣出點'], df['賣出原因'] = get_signal_markers(df)
@@ -264,13 +279,13 @@ if final_target_code:
 
         fig = go.Figure()
         
-        # 繪製實價線 (真實市場數值)
+        # 繪製真實收盤價實價線 (強化對空值連線的抵抗力)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
-            mode='lines+markers', name='實價',  # 增加 markers 點，方便看清最新一天的精準價位
+            mode='lines+markers', name='實價',
             line=dict(color='#FFFFFF', width=2),
             marker=dict(size=4),
-            connectgaps=True,
+            connectgaps=True,  # 即使有極微小間隙，也強行繪製連線
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
