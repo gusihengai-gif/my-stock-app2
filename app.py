@@ -188,8 +188,7 @@ if row2_cols[2].button("240天", use_container_width=True):
     st.session_state.view_days = 240
 
 # --- 7. 資料抓取與圖表渲染 ---
-# 【重要優化】將快取時間 ttl 改為 10 秒，確保每次手動重新整理網頁都能抓到當下最新報價
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=10)  # 即時報價快取 10 秒
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
     data = yf.download(target_sym, period="2y", auto_adjust=False)
@@ -209,7 +208,6 @@ if final_target_code:
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
         
-        # 【重要優化】徹底移除 yfinance 下載時可能夾帶的時區尾巴 (避免今天最新的K線丟失)
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
         
@@ -220,23 +218,29 @@ if final_target_code:
         view_df['日期顯示'] = view_df.index.strftime('%Y-%m-%d')
         view_df['月份'] = view_df.index.strftime('%Y-%m')
 
-        tick_vals = []
-        tick_texts = []
+        # --- 修正後的 X 軸刻度計算邏輯 ---
+        all_dates = view_df['日期顯示'].tolist()
         days = st.session_state.view_days
 
         if days == 10:
-            tick_vals = view_df['日期顯示'].tolist()
-            tick_texts = view_df['日期顯示'].tolist()
+            tick_vals = all_dates
+            tick_texts = all_dates
         elif days == 20:
-            tick_vals = view_df['日期顯示'].tolist()[::5]
-            tick_texts = view_df['日期顯示'].tolist()[::5]
+            tick_vals = all_dates[::5]
+            tick_texts = all_dates[::5]
         elif days == 30:
-            tick_vals = view_df['日期顯示'].tolist()[::10]
-            tick_texts = view_df['日期顯示'].tolist()[::10]
+            tick_vals = all_dates[::10]
+            tick_texts = all_dates[::10]
         else: 
+            # 預設抓每個月的第一天
             first_days = view_df.groupby('月份').head(1)
             tick_vals = first_days['日期顯示'].tolist()
             tick_texts = first_days['日期顯示'].tolist()
+
+        # 【核心修正】無論如何，強制把最新的一天加入 X 軸刻度清單中，防止最後一個點被 Plotly 隱藏
+        if all_dates and (all_dates[-1] not in tick_vals):
+            tick_vals.append(all_dates[-1])
+            tick_texts.append(all_dates[-1])
 
         fig = go.Figure()
         
