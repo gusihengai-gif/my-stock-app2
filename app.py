@@ -29,7 +29,7 @@ def fetch_taiwan_stocks():
     
     stock_list = []
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Scientific Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
     }
@@ -97,23 +97,37 @@ def get_stock_display_name(symbol):
         return f"{ALL_STOCKS[pure_code]} ({symbol})"
     return symbol
 
-# --- 3. 技術指標計算 ---
+# --- 3. 技術指標計算 (優化防斷線機制) ---
 def calculate_indicators(df):
-    df = df.copy().astype(float)
+    df = df.copy()
+    # 確保主要欄位轉換為浮點數
+    for col in ['Open', 'High', 'Low', 'Close']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0))
     loss = (-delta.where(delta < 0, 0))
-    df['RSI5'] = 100 - (100 / (1 + (gain.rolling(5).mean() / loss.rolling(5).mean())))
-    df['RSI10'] = 100 - (100 / (1 + (gain.rolling(10).mean() / loss.rolling(10).mean())))
+    
+    # 避免分母為 0
+    roll_gain = gain.rolling(5).mean()
+    roll_loss = loss.rolling(5).mean()
+    df['RSI5'] = 100 - (100 / (1 + (roll_gain / roll_loss.replace(0, np.nan))))
+    
+    roll_gain10 = gain.rolling(10).mean()
+    roll_loss10 = loss.rolling(10).mean()
+    df['RSI10'] = 100 - (100 / (1 + (roll_gain10 / roll_loss10.replace(0, np.nan))))
     
     low_min = df['Low'].rolling(window=9).min()
     high_max = df['High'].rolling(window=9).max()
-    rsv = (df['Close'] - low_min) / (high_max - low_min) * 100
+    rsv = (df['Close'] - low_min) / (high_max - low_min).replace(0, np.nan) * 100
     df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
+    
+    # 【核心優化】向後填充空值，防止最新一天的技術指標未產出導致 Plotly 繪圖斷線
+    df = df.bfill().ffill()
     return df
 
 # --- 4. 核心買賣訊號邏輯（三重共振） ---
@@ -127,6 +141,10 @@ def get_signal_markers(df):
         row = df.iloc[i]
         prev_row = df.iloc[i-1]
         
+        # 防止遇到邊緣 NaN 報錯
+        if pd.isna(row['MA5']) or pd.isna(row['MA10']):
+            continue
+            
         if not in_position:
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
@@ -204,10 +222,12 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
+        # 攤平多重索引
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
         
+        # 移除時區干擾
         if data.index.tz is not None:
             data.index = data.index.tz_localize(None)
         
@@ -218,7 +238,7 @@ if final_target_code:
         view_df['日期顯示'] = view_df.index.strftime('%Y-%m-%d')
         view_df['月份'] = view_df.index.strftime('%Y-%m')
 
-        # --- 修正後的 X 軸刻度計算邏輯 ---
+        # 計算 X 軸刻度
         all_dates = view_df['日期顯示'].tolist()
         days = st.session_state.view_days
 
@@ -232,22 +252,23 @@ if final_target_code:
             tick_vals = all_dates[::10]
             tick_texts = all_dates[::10]
         else: 
-            # 預設抓每個月的第一天
             first_days = view_df.groupby('月份').head(1)
             tick_vals = first_days['日期顯示'].tolist()
             tick_texts = first_days['日期顯示'].tolist()
 
-        # 【核心修正】無論如何，強制把最新的一天加入 X 軸刻度清單中，防止最後一個點被 Plotly 隱藏
+        # 強制加入最後一天日期標籤
         if all_dates and (all_dates[-1] not in tick_vals):
             tick_vals.append(all_dates[-1])
             tick_texts.append(all_dates[-1])
 
         fig = go.Figure()
         
+        # 繪製實價線 (對應確保完全填滿的 Close 欄位)
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines', name='實價',
             line=dict(color='#FFFFFF', width=2),
+            connectgaps=True,  # 【加強防線】強制 Plotly 連接任何可能的微小間隙
             hovertemplate="日期: %{x}<br>價格: %{y:.2f}<extra></extra>"
         ))
         
