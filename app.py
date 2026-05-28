@@ -20,7 +20,7 @@ hide_menu_style = """
 st.markdown(hide_menu_style, unsafe_allow_html=True)
 
 # --- 2. 動態抓取最新台股上市櫃與主要 ETF 資料庫 ---
-@st.cache_data(ttl=86400)  # 快取 24 小時
+@st.cache_data(ttl=86400)  # 股票清單一天更新一次即可
 def fetch_taiwan_stocks():
     urls = {
         "上市": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
@@ -28,7 +28,6 @@ def fetch_taiwan_stocks():
     }
     
     stock_list = []
-    # 偽裝成真人 Chrome 瀏覽器
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -37,17 +36,13 @@ def fetch_taiwan_stocks():
     
     for market_type, url in urls.items():
         try:
-            # 安全破防 403：先用 requests 把網頁文字下載下來
             response = requests.get(url, headers=headers, timeout=10)
-            response.encoding = 'ms950'  # 修正台股網頁萬年 CP950 編碼問題
+            response.encoding = 'ms950'
             
-            # 將下載下來的網頁純文字，包裝成記憶體緩衝流（StringIO）餵給 pandas
-            # 這樣 pandas 就不會直接去撞證交所牆壁，完美破解 403 Forbidden
             html_data = io.StringIO(response.text)
             dfs = pd.read_html(html_data)
             
             target_df = None
-            # 遍歷所有表格，尋找真正含有股票資料的表格
             for table in dfs:
                 if table.shape[1] > 0 and table.iloc[0].astype(str).str.contains('有價證券代號及名稱').any():
                     target_df = table.copy()
@@ -56,7 +51,6 @@ def fetch_taiwan_stocks():
             if target_df is None:
                 continue
                 
-            # 設定標準欄位標題
             target_df.columns = target_df.iloc[0]
             target_df = target_df.iloc[1:]
             target_df = target_df.dropna(subset=['有價證券代號及名稱'])
@@ -65,7 +59,6 @@ def fetch_taiwan_stocks():
             for _, row in target_df.iterrows():
                 text = str(row['有價證券代號及名稱']).strip()
                 
-                # 判斷是否進入股票或受益憑證區段
                 if "股 票" in text or "股票" in text or "受益憑證" in text:
                     is_valid_section = True
                     continue
@@ -78,10 +71,7 @@ def fetch_taiwan_stocks():
                     stock_id = parts[0].strip()
                     stock_name = parts[1].strip()
                     
-                    # 條件一：剛好 4 碼純數字（一般個股）
                     is_normal_stock = (len(stock_id) == 4 and stock_id.isdigit())
-                    
-                    # 條件二：5 或 6 碼，且必須是 00 開頭（精準保留各類 ETF，允許帶英文後綴）
                     is_etf = (len(stock_id) in [5, 6] and stock_id.startswith("00"))
                     
                     if is_normal_stock or is_etf:
@@ -90,7 +80,6 @@ def fetch_taiwan_stocks():
         except Exception as e:
             st.error(f"無法從 {market_type} 網址獲取資料: {e}")
             
-    # 去除可能重複的代碼並排序
     unique_stocks = {item['id']: item['name'] for item in stock_list}
     sorted_list = [{"id": k, "name": v} for k, v in sorted(unique_stocks.items())]
     return sorted_list
@@ -159,7 +148,6 @@ st.title("🚀 股票買賣時機觀測")
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 安全尋找預設值索引
 default_index = 0
 for idx, item in enumerate(ALL_STOCKS_LIST):
     if item.startswith("2330"):
@@ -200,7 +188,8 @@ if row2_cols[2].button("240天", use_container_width=True):
     st.session_state.view_days = 240
 
 # --- 7. 資料抓取與圖表渲染 ---
-@st.cache_data(ttl=3600)
+# 【重要優化】將快取時間 ttl 改為 10 秒，確保每次手動重新整理網頁都能抓到當下最新報價
+@st.cache_data(ttl=10)
 def fetch_stock_data(symbol):
     target_sym = f"{symbol}.TW" if "." not in symbol else symbol
     data = yf.download(target_sym, period="2y", auto_adjust=False)
@@ -219,6 +208,10 @@ if final_target_code:
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
+        
+        # 【重要優化】徹底移除 yfinance 下載時可能夾帶的時區尾巴 (避免今天最新的K線丟失)
+        if data.index.tz is not None:
+            data.index = data.index.tz_localize(None)
         
         df = calculate_indicators(data)
         df['買入點'], df['賣出點'], df['賣出原因'] = get_signal_markers(df)
