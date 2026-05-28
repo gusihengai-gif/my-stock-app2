@@ -1,11 +1,25 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
 import requests
 
-# ==============================================================================
-# 1. 全新自動化股票與 ETF 爬蟲整合 (取代原本冗長的手打清單)
-# ==============================================================================
-@st.cache_data(ttl=86400)  # 快取 24 小時，避免頻繁請求導致網頁卡頓
+# --- 1. 全域網頁設定 ---
+st.set_page_config(page_title="台股買賣時機觀測", layout="wide")
+
+# 隱藏 Streamlit 預設的 Menu 與 Footer
+hide_menu_style = """
+        <style>
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+        </style>
+        """
+st.markdown(hide_menu_style, unsafe_allow_html=True)
+
+# --- 2. 動態抓取最新台股上市櫃與主要 ETF 資料庫（防權證與雜訊） ---
+@st.cache_data(ttl=86400)  # 快取 24 小時，避免重複下載卡頓
 def fetch_taiwan_stocks():
     urls = {
         "上市": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
@@ -19,92 +33,56 @@ def fetch_taiwan_stocks():
     
     for market_type, url in urls.items():
         try:
-            # 抓取網頁並修正為 CP950/MS950 編碼
             response = requests.get(url, headers=headers)
             response.encoding = 'ms950'
             
-            # 使用 pandas 解析 HTML 中的表格
             dfs = pd.read_html(response.text)
             df = dfs[0]
             
-            # 將第一行設定為標題，並去除舊的第一行
             df.columns = df.iloc[0]
             df = df.iloc[1:]
-            
-            # 確保有價證券欄位有資料
             df = df.dropna(subset=['有價證券代號及名稱'])
             
-            is_valid_section = False  # 區段標記開關
-            
+            is_valid_section = False
             for _, row in df.iterrows():
                 text = str(row['有價證券代號及名稱']).strip()
                 
-                # 允許「股票」與「受益憑證 (ETF)」區段進入抓取
                 if "股 票" in text or "股票" in text or "受益憑證" in text:
                     is_valid_section = True
                     continue
-                # 如果遇到權證、債券等雜訊大標題，立即關閉開關
                 elif "認購" in text or "認售" in text or "權證" in text or "債券" in text or "創櫃" in text:
                     is_valid_section = False
                     continue
                 
-                # 解析符合條件的行
                 if is_valid_section and "　" in text:
                     parts = text.split("　")
                     stock_id = parts[0].strip()
                     stock_name = parts[1].strip()
                     
-                    # 精準過濾防線：完美保留個股 + ETF，封殺權證
                     if stock_id.isdigit():
-                        # 條件一：剛好 4 碼（一般股票）
                         is_normal_stock = (len(stock_id) == 4)
-                        # 條件二：5 或 6 碼，且必須是 00 開頭（精準保留 ETF）
                         is_etf = (len(stock_id) in [5, 6] and stock_id.startswith("00"))
                         
                         if is_normal_stock or is_etf:
-                            # 排除特別股與非普通股性質的雜訊
                             if "特" not in stock_name and "債" not in stock_name:
                                 stock_list.append({"id": stock_id, "name": stock_name})
-                            
         except Exception as e:
             st.error(f"無法從 {market_type} 網址獲取資料: {e}")
             
-    # 依據代碼由小到大排序
-    stock_list = sorted(stock_list, key=lambda x: x['id'])
-    return stock_list
+    return sorted(stock_list, key=lambda x: x['id'])
 
-# 啟動自動下載與篩選
-with st.spinner("正在即時更新台股上市櫃與 ETF 清單..."):
+# 載入資料並轉換為對照結構
+with st.spinner("正在即時同步最新台股與 ETF 清單..."):
     ALL_STOCKS_DATA = fetch_taiwan_stocks()
 
-# 自動生成後續主程式需要的所有格式
 ALL_STOCKS = {item['id']: item['name'] for item in ALL_STOCKS_DATA}
 ALL_STOCKS_LIST = [f"{item['id']} {item['name']}" for item in ALL_STOCKS_DATA]
 
-
-# ==============================================================================
-# 2. 你的主程式核心邏輯與介面 (無縫接軌)
-# ==============================================================================
-def get_stock_display_name(stock_id):
-    """根據代碼取得顯示名稱，支援未知代碼"""
-    name = ALL_STOCKS.get(stock_id)
-    return f"{stock_id} {name}" if name else stock_id
-
-# 介面大標題
-st.title("📊 台灣股市即時決策儀表板")
-
-# 股票搜尋與選擇下拉選單 (這裡直接帶入自動抓取的 ALL_STOCKS_LIST)
-selected_stock_str = st.selectbox(
-    "請選擇或輸入股票代碼/名稱：",
-    options=ALL_STOCKS_LIST,
-    index=ALL_STOCKS_LIST.index("2330 台積電") if "2330 台積電" in ALL_STOCKS_LIST else 0
-)
-
-# 拆分出使用者最終選取的代碼
-selected_stock_id = selected_stock_str.split(" ")[0]
-
-st.success(f"目前選擇的分析目標：{get_stock_display_name(selected_stock_id)}")
-
+def get_stock_display_name(symbol):
+    pure_code = symbol.split('.')[0].strip()
+    if pure_code in ALL_STOCKS:
+        return f"{ALL_STOCKS[pure_code]} ({symbol})"
+    return symbol
 
 # --- 3. 技術指標計算 ---
 def calculate_indicators(df):
@@ -125,7 +103,7 @@ def calculate_indicators(df):
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     return df
 
-# --- 4. 核心買賣訊號邏輯 ---
+# --- 4. 核心買賣訊號邏輯（三重共振） ---
 def get_signal_markers(df):
     buy_markers = np.full(len(df), np.nan)
     sell_markers = np.full(len(df), np.nan)
@@ -137,10 +115,12 @@ def get_signal_markers(df):
         prev_row = df.iloc[i-1]
         
         if not in_position:
+            # 買入：均線黃金交叉 + RSI5 > 50
             if (prev_row['MA5'] <= prev_row['MA10'] and row['MA5'] > row['MA10']) and (row['RSI5'] > 50):
                 buy_markers[i] = row['Close']
                 in_position = True
         elif in_position:
+            # 賣出：RSI死叉 + KDJ死叉 + 跌破MA5
             cond_rsi = (row['RSI5'] < row['RSI10'])
             cond_price = (row['Close'] < row['MA5'])
             cond_kdj = (row['K'] < row['D'])
@@ -151,16 +131,21 @@ def get_signal_markers(df):
                 in_position = False 
     return buy_markers, sell_markers, sell_reasons
 
-# --- 5. 主畫面最上方：股票搜尋欄（改移至此處，免去手機折疊問題） ---
+# --- 5. 主畫面：股票搜尋與選擇欄（置頂防手機版折疊） ---
 st.title("🚀 股票買賣時機觀測")
 
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
+# 確保預設的 2330 有在抓到的選單裡，如果沒有就選第一個
+default_index = 0
+if "2330 台積電" in ALL_STOCKS_LIST:
+    default_index = ALL_STOCKS_LIST.index("2330 台積電")
+
 selected_stock_str = st.selectbox(
     "請輸入或選擇股票代碼：",
     options=ALL_STOCKS_LIST,
-    index=list(sorted(ALL_STOCKS.keys())).index(st.session_state.final_target_code) if st.session_state.final_target_code in ALL_STOCKS else 0
+    index=default_index
 )
 
 if selected_stock_str:
@@ -168,13 +153,12 @@ if selected_stock_str:
 
 final_target_code = st.session_state.final_target_code
 
-# --- 6. 觀測週期選擇區塊（2 排按鈕） ---
+# --- 6. 觀測週期選擇區塊 ---
 if 'view_days' not in st.session_state:
     st.session_state.view_days = 60
 
 st.write("### 觀測週期選擇")
 
-# 第一排按鈕 (10天、20天、30天)
 row1_cols = st.columns(3)
 if row1_cols[0].button("10天", use_container_width=True):
     st.session_state.view_days = 10
@@ -183,7 +167,6 @@ if row1_cols[1].button("20天", use_container_width=True):
 if row1_cols[2].button("30天", use_container_width=True):
     st.session_state.view_days = 30
 
-# 第二排按鈕 (60天、120天、240天)
 row2_cols = st.columns(3)
 if row2_cols[0].button("60天", use_container_width=True):
     st.session_state.view_days = 60
@@ -191,7 +174,6 @@ if row2_cols[1].button("120天", use_container_width=True):
     st.session_state.view_days = 120
 if row2_cols[2].button("240天", use_container_width=True):
     st.session_state.view_days = 240
-
 
 # --- 7. 資料抓取與圖表渲染 ---
 @st.cache_data(ttl=3600)
@@ -210,6 +192,7 @@ if final_target_code:
         display_title = get_stock_display_name(final_symbol)
         st.subheader(f"📈 {display_title}")
         
+        # 修正 yfinance 的多重索引欄位問題
         if hasattr(data.columns, 'levels') or ('MultiIndex' in type(data.columns).__name__):
             data.columns = data.columns.get_level_values(0)
         data.columns = [str(c).strip().capitalize() for c in data.columns]
