@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
 
 # --- 1. 全域網頁設定 ---
 st.set_page_config(page_title="台股買賣時機觀測", layout="wide")
@@ -38,7 +39,7 @@ def fetch_taiwan_stocks():
             response.encoding = 'ms950'
             
             soup = BeautifulSoup(response.text, 'html.parser')
-            table = soup.find('table')
+            table = None
             tables = soup.find_all('table')
             for t in tables:
                 if '有價證券代號及名稱' in t.text:
@@ -122,7 +123,7 @@ def calculate_indicators(df):
     df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     
-    # 在計算完所有技術指標後，針對 DataFrame 的空值進行安全向前與向後填充，確保最新一天絕對有數據
+    # 指標邊際空值全面填充
     df = df.bfill().ffill()
     return df
 
@@ -238,10 +239,34 @@ if final_target_code:
         for col in ['Open', 'High', 'Low', 'Close']:
             data[col] = pd.to_numeric(data[col], errors='coerce')
         
-        # 【最核心對齊機制修復】在進入任何圖表操作前，直接將 Index 轉換成最純粹無時區、統一格式的日期字串
+        # 【最核心對齊機制】轉換為無時區的格式化字串
         data.index = data.index.strftime('%Y-%m-%d')
         
-        # 如果最後交易日數值缺漏，優先用前一日收盤價強制補齊實價
+        # 🔥【終極即時價 T+0 覆蓋補丁】🔥
+        if len(data) >= 1:
+            # 如果最後一天的收盤價是空值，或者今天剛收盤、歷史日K線資料還沒同步進 yfinance
+            if pd.isna(data['Close'].iloc[-1]) or datetime.now().strftime('%Y-%m-%d') == data.index[-1]:
+                try:
+                    # 建立即時 Ticker 請求
+                    ticker_obj = yf.Ticker(final_symbol)
+                    # 抓取最新的 1 天即時日K資料 (包含盤中/剛收盤即時資料)
+                    live_data = ticker_obj.history(period="1d")
+                    if not live_data.empty:
+                        live_close = float(live_data['Close'].iloc[-1])
+                        live_open = float(live_data['Open'].iloc[-1])
+                        live_high = float(live_data['High'].iloc[-1])
+                        live_low = float(live_data['Low'].iloc[-1])
+                        
+                        # 只有在抓到的即時價不是空值且有效的情況下才進行強制覆蓋
+                        if not pd.isna(live_close) and live_close > 0:
+                            data['Close'].iloc[-1] = live_close
+                            data['Open'].iloc[-1] = live_open
+                            data['High'].iloc[-1] = live_high
+                            data['Low'].iloc[-1] = live_low
+                except Exception as e:
+                    pass
+        
+        # 雙重兜底安全防禦：如果連即時 API 都沒反應，才萬不得已複製前一天
         if len(data) >= 2:
             for col in ['Open', 'High', 'Low', 'Close']:
                 if pd.isna(data[col].iloc[-1]):
@@ -251,7 +276,7 @@ if final_target_code:
         df['買入點'], df['賣出點'], df['賣出原因'] = get_signal_markers(df)
         
         view_df = df.tail(st.session_state.view_days).copy()
-        view_df['日期顯示'] = view_df.index  # 此時 Index 已經是標準的字串陣列
+        view_df['日期顯示'] = view_df.index
         
         # 提取月份用於計算大週期的刻度分佈
         view_df['月份'] = pd.to_datetime(view_df['日期顯示']).dt.strftime('%Y-%m')
@@ -274,14 +299,13 @@ if final_target_code:
             tick_vals = first_days['日期顯示'].tolist()
             tick_texts = first_days['日期顯示'].tolist()
 
-        # 雙重防線：確保最後一天的日期標籤百分之百被加入到刻度中
         if all_dates and (all_dates[-1] not in tick_vals):
             tick_vals.append(all_dates[-1])
             tick_texts.append(all_dates[-1])
 
         fig = go.Figure()
         
-        # 繪製實價線 (此時 X 軸陣列與 y 軸陣列元素完全標準化對齊)
+        # 繪製實價線
         fig.add_trace(go.Scatter(
             x=view_df['日期顯示'], y=view_df['Close'],
             mode='lines+markers', name='實價',
