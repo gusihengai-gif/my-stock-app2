@@ -36,15 +36,26 @@ def fetch_taiwan_stocks():
             response = requests.get(url, headers=headers)
             response.encoding = 'ms950'
             
+            # 解析網頁內所有的表格
             dfs = pd.read_html(response.text)
-            df = dfs[0]
             
-            df.columns = df.iloc[0]
-            df = df.iloc[1:]
-            df = df.dropna(subset=['有價證券代號及名稱'])
+            target_df = None
+            # 遍歷所有表格，尋找真正含有股票資料的表格
+            for table in dfs:
+                if table.shape[1] > 0 and table.iloc[0].astype(str).str.contains('有價證券代號及名稱').any():
+                    target_df = table.copy()
+                    break
+            
+            if target_df is None:
+                continue
+                
+            # 設定標準欄位標題
+            target_df.columns = target_df.iloc[0]
+            target_df = target_df.iloc[1:]
+            target_df = target_df.dropna(subset=['有價證券代號及名稱'])
             
             is_valid_section = False
-            for _, row in df.iterrows():
+            for _, row in target_df.iterrows():
                 text = str(row['有價證券代號及名稱']).strip()
                 
                 # 判斷是否進入股票或受益憑證區段
@@ -141,7 +152,7 @@ st.title("🚀 股票買賣時機觀測")
 if "final_target_code" not in st.session_state:
     st.session_state.final_target_code = "2330"
 
-# 安全尋找預設值索引，防呆機制
+# 安全尋找預設值索引
 default_index = 0
 for idx, item in enumerate(ALL_STOCKS_LIST):
     if item.startswith("2330"):
